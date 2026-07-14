@@ -1,0 +1,18 @@
+// ==UserScript==
+// @name         Asklipios Modular
+// @namespace    https://github.com/VectorPerkins1/Asklipios-Userscript
+// @version      0.1.0
+// @description  Modular tools for the Asklipios hospital system
+//
+// @match        *://care.ghl.medical:51021/*
+// @match        *://10.136.33.126:51021/*
+//
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    console.log('Asklipios Modular loader 0.1.0 loaded');
+})();
