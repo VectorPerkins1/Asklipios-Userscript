@@ -1,7 +1,7 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.13.0
+ * Version 0.13.1
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
@@ -78,7 +78,7 @@
     A.modules = A.modules || {};
     A.modules.legacyApp = {
         loaded: true,
-        version: '0.13.0'
+        version: '0.13.1'
     };
 
 
