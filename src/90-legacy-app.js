@@ -1,7 +1,7 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.12.0
+ * Version 0.13.0
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
@@ -78,7 +78,7 @@
     A.modules = A.modules || {};
     A.modules.legacyApp = {
         loaded: true,
-        version: '0.12.0'
+        version: '0.13.0'
     };
 
 
@@ -3921,6 +3921,32 @@ async function saveSurgeryReport({
         throw new Error(
             responseData.sErrorMsg ||
             "Απέτυχε η αποθήκευση πρακτικού."
+        );
+    }
+
+    /*
+     * Keep the Daily Overview postoperative day in sync with the
+     * practical recorded through the helper. The overview also attempts
+     * to read the date from Care during its normal refresh.
+     */
+    try {
+        A.dailyOverview?.recordSurgeryDate?.(
+            encounterNr,
+            opDocDate
+        );
+
+        window.dispatchEvent(
+            new CustomEvent('asklipios:surgery-saved', {
+                detail: {
+                    encounterNr: String(encounterNr),
+                    surgeryDate: String(opDocDate)
+                }
+            })
+        );
+    } catch (error) {
+        console.warn(
+            'Daily overview surgery date sync failed:',
+            error
         );
     }
 
