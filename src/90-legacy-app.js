@@ -1,7 +1,7 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.11.0
+ * Version 0.12.0
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
@@ -78,7 +78,7 @@
     A.modules = A.modules || {};
     A.modules.legacyApp = {
         loaded: true,
-        version: '0.11.0'
+        version: '0.12.0'
     };
 
 
@@ -471,6 +471,10 @@
                 Ιατρική Καρτέλα
             </button>
 
+            <button id="lab-daily-overview" style="width:100%;margin-top:8px;background:#d9eaf7;">
+                Ημερήσια Επισκόπηση
+            </button>
+
 
             <div id="lab-log" style="margin-top:8px;max-height:160px;overflow:auto;border-top:1px solid #aaa;padding-top:5px;"></div>
 
@@ -499,6 +503,13 @@
         doc.getElementById("lab-admission-package").onclick = openAdmissionPanel;
         doc.getElementById("lab-postop-xrays").onclick = openPostopXrayPanel;
         doc.getElementById("lab-medical-card").onclick = openMedicalCardPanel;
+        doc.getElementById("lab-daily-overview").onclick = () => {
+            if (A.dailyOverview?.open) {
+                A.dailyOverview.open();
+            } else {
+                alert("Η Ημερήσια Επισκόπηση δεν έχει φορτωθεί ακόμη.");
+            }
+        };
 
         initDateTime();
         loadDoctors();
@@ -595,7 +606,8 @@
             encounterNr: cb.value,
             label: cb.closest("label")?.innerText.trim() || cb.value,
             room: p?.room || "",
-            bed: p?.bed || ""
+            bed: p?.bed || "",
+            name: p?.patientName || ""
         };
     });
 }
@@ -1874,6 +1886,73 @@ async function sendVialsOrders() {
         return `${d}/${m}/${y}`;
     }
 
+
+    const ANTICOAGULATION_DISPLAY_LABELS = {
+        Xarelto10: 'Xarelto 10mg',
+        Xarelto20: 'Xarelto 20mg',
+        Eliquis5: 'Eliquis 5mg',
+        'Eliquis2.5': 'Eliquis 2.5mg',
+        Pradaxa: 'Pradaxa',
+        Sintrom: 'Sintrom',
+        Ivor3500: 'Ivor 3500',
+        Ivor2500: 'Ivor 2500',
+        Clexane40: 'Clexane 4000',
+        Clexane60: 'Clexane 6000',
+        'Arixtra2.5': 'Arixtra 2.5mg'
+    };
+
+    function normalizeAnticoagulationEntry(key, value) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            return {
+                key,
+                title: String(value.title || key).trim(),
+                text: String(value.text || '')
+            };
+        }
+
+        return {
+            key,
+            title: ANTICOAGULATION_DISPLAY_LABELS[key] || key,
+            text: String(value || '')
+        };
+    }
+
+    function getAnticoagulationEntries() {
+        return Object.entries(ANTICOAGULATION_TEXTS || {})
+            .map(([key, value]) => normalizeAnticoagulationEntry(key, value))
+            .sort((a, b) => a.title.localeCompare(b.title, 'el'));
+    }
+
+    function getAnticoagulationText(key) {
+        if (!key) return '';
+        return normalizeAnticoagulationEntry(
+            key,
+            ANTICOAGULATION_TEXTS[key]
+        ).text;
+    }
+
+    function renderAnticoagulationOptions(selected = '') {
+        return getAnticoagulationEntries().map(entry => `
+            <option value="${escapeHtml(entry.key)}" ${entry.key === selected ? 'selected' : ''}>
+                ${escapeHtml(entry.title)}
+            </option>
+        `).join('');
+    }
+
+    function refreshMedicalCardAnticoagulationSelect() {
+        const doc = getNursingFrame()?.document;
+        const select = doc?.getElementById('mc-anticoagulation');
+        if (!select) return;
+
+        const previous = select.value;
+        select.innerHTML = '<option value="">-- Επιλογή --</option>' +
+            renderAnticoagulationOptions(previous);
+
+        if (getAnticoagulationEntries().some(entry => entry.key === previous)) {
+            select.value = previous;
+        }
+    }
+
     function getDoctorFollowupTemplate(doctorName) {
         const entry = DOCTOR_FOLLOWUP_TEXTS[doctorName] || null;
         if (!entry) return '';
@@ -1941,7 +2020,7 @@ async function sendVialsOrders() {
         if (!box) return;
 
         const presetText = PRESET_DISCHARGE_TEXTS[preset] || "";
-        const anticoagulationText = ANTICOAGULATION_TEXTS[anticoagulation] || "";
+        const anticoagulationText = getAnticoagulationText(anticoagulation);
         const followupText = renderDoctorFollowupText(
             doctorName,
             followupDate
@@ -1954,6 +2033,248 @@ async function sendVialsOrders() {
         ]
             .filter(Boolean)
             .join("\n\n");
+    }
+
+
+    function simplifyDiagnosisForPreset(diagnosis) {
+        if (!diagnosis) return [];
+        return [{
+            id: Number(diagnosis.id || 0),
+            code: String(diagnosis.code || diagnosis.displayCode || ''),
+            name: String(diagnosis.name || ''),
+            course: String(diagnosis.course || ''),
+            therapy: String(diagnosis.therapy || ''),
+            default: true
+        }];
+    }
+
+    function simplifyMedicalActForPreset(medicalAct) {
+        if (!medicalAct) return [];
+        return [{
+            id: Number(medicalAct.id || 0),
+            code: String(medicalAct.code || medicalAct.displayCode || ''),
+            name: String(medicalAct.name || ''),
+            requireLr: medicalAct.requireLr?.value === true || medicalAct.requireLr === true,
+            dependency: medicalAct.dependency ?? null,
+            default: true
+        }];
+    }
+
+    function extractPresetOnlyDischargeText() {
+        const doc = getNursingFrame()?.document;
+        if (!doc) return '';
+
+        let text = doc.getElementById('mc-discharge-instructions')?.value || '';
+        const anticoagulationKey = doc.getElementById('mc-anticoagulation')?.value || '';
+        const doctorName = getSelectedMedicalCardDoctorName();
+        const followupDate = doc.getElementById('mc-followup-date')?.value || '';
+        const dynamicParts = [
+            getAnticoagulationText(anticoagulationKey),
+            renderDoctorFollowupText(doctorName, followupDate)
+        ].filter(Boolean);
+
+        dynamicParts.forEach(part => {
+            text = text.replace(part, '');
+        });
+
+        return text
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    function saveCurrentMedicalCardAsPreset() {
+        const doc = getNursingFrame()?.document;
+        if (!doc || !A.registry) return;
+
+        const suggested = doc.getElementById('mc-preset')?.value || '';
+        const name = prompt(
+            'Όνομα νέου preset:',
+            suggested ? `${suggested} - αντίγραφο` : ''
+        )?.trim();
+
+        if (!name) return;
+
+        const exists = Object.prototype.hasOwnProperty.call(
+            MEDICAL_CARD_PRESETS,
+            name
+        );
+
+        if (exists && !confirm(`Υπάρχει ήδη το preset «${name}». Να αντικατασταθεί;`)) {
+            return;
+        }
+
+        const diagnosis = getSelectedDiagnosisObject();
+        const medicalAct = getSelectedMedicalActObject();
+        const surgeryDescription =
+            doc.getElementById('mc-surgery-description')?.value || '';
+
+        A.registry.setMapItem('MEDICAL_CARD_PRESETS', name, {
+            course: doc.getElementById('mc-course')?.value || '',
+            therapy: doc.getElementById('mc-treatment')?.value || ''
+        });
+        A.registry.setMapItem(
+            'DIAGNOSIS_OPTIONS',
+            name,
+            simplifyDiagnosisForPreset(diagnosis)
+        );
+        A.registry.setMapItem(
+            'MEDICAL_ACT_OPTIONS',
+            name,
+            simplifyMedicalActForPreset(medicalAct)
+        );
+        A.registry.setMapItem(
+            'PRESET_DISCHARGE_TEXTS',
+            name,
+            extractPresetOnlyDischargeText()
+        );
+        A.registry.setMapItem(
+            'SURGERY_DESCRIPTIONS',
+            name,
+            surgeryDescription
+        );
+
+        const select = doc.getElementById('mc-preset');
+        if (select) {
+            const keys = Object.keys(MEDICAL_CARD_PRESETS)
+                .sort((a, b) => a.localeCompare(b, 'el'));
+            select.innerHTML = '<option value="">-- Επιλογή --</option>' +
+                keys.map(key => `<option value="${escapeHtml(key)}">${escapeHtml(key)}</option>`).join('');
+            select.value = name;
+        }
+
+        alert(`Το preset «${name}» αποθηκεύτηκε.`);
+    }
+
+    function showMedicalCardPreview({
+        patients,
+        dateText,
+        selectedDiagnosis,
+        selectedMedicalAct,
+        finalCourse,
+        finalTherapy,
+        finalDischargeInstructions,
+        surgeryDescription,
+        surgeryEnabled
+    }) {
+        const doc = getNursingFrame()?.document;
+        if (!doc) return Promise.resolve(null);
+
+        doc.getElementById('mc-preview-overlay')?.remove();
+
+        const actionRows = [
+            selectedDiagnosis ? {
+                key: 'diagnosis',
+                title: 'Διάγνωση ICD-10',
+                text: `${selectedDiagnosis.code || ''} — ${selectedDiagnosis.name || ''}`
+            } : null,
+            selectedMedicalAct ? {
+                key: 'medicalAct',
+                title: 'Ιατρική πράξη',
+                text: `${selectedMedicalAct.code || ''} — ${selectedMedicalAct.name || ''}`
+            } : null,
+            finalCourse ? { key: 'course', title: 'Πορεία νόσου', text: finalCourse } : null,
+            finalTherapy ? { key: 'therapy', title: 'Θεραπευτική αγωγή', text: finalTherapy } : null,
+            finalDischargeInstructions ? {
+                key: 'discharge',
+                title: 'Οδηγίες εξόδου',
+                text: finalDischargeInstructions
+            } : null,
+            surgeryEnabled ? {
+                key: 'surgery',
+                title: 'Πρακτικό χειρουργείου',
+                text: surgeryDescription || 'Το πρακτικό θα καταχωρηθεί με τα στοιχεία του ανοιχτού panel.'
+            } : null
+        ].filter(Boolean);
+
+        return new Promise(resolve => {
+            const overlay = doc.createElement('div');
+            overlay.id = 'mc-preview-overlay';
+            overlay.style.cssText = [
+                'position:fixed', 'inset:0', 'z-index:2147483646',
+                'background:rgba(0,0,0,.55)', 'display:flex',
+                'align-items:center', 'justify-content:center', 'padding:18px',
+                'font-family:Arial,sans-serif'
+            ].join(';');
+
+            overlay.innerHTML = `
+                <div style="width:min(1000px,96vw);max-height:94vh;overflow:auto;background:white;border:2px solid #263238;border-radius:8px;box-shadow:0 14px 48px rgba(0,0,0,.4);">
+                    <div style="position:sticky;top:0;background:#eaf2f8;border-bottom:1px solid #aab7c4;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;z-index:2;">
+                        <div>
+                            <b style="font-size:17px;">Προεπισκόπηση τελικής καταχώρησης</b>
+                            <div style="font-size:12px;color:#566573;margin-top:3px;">Ημερομηνία: ${escapeHtml(dateText)}</div>
+                        </div>
+                        <button type="button" id="mc-preview-close">✕</button>
+                    </div>
+
+                    <div style="padding:14px;display:grid;grid-template-columns:320px minmax(0,1fr);gap:14px;">
+                        <div>
+                            <b>Ασθενείς</b>
+                            <div style="border:1px solid #ccd1d1;border-radius:5px;margin-top:7px;max-height:410px;overflow:auto;">
+                                ${patients.map(patient => `
+                                    <label style="display:block;padding:8px;border-bottom:1px solid #e5e7e9;cursor:pointer;">
+                                        <input type="checkbox" class="mc-preview-patient" value="${escapeHtml(patient.encounterNr)}" checked>
+                                        ${escapeHtml(patient.label)}
+                                    </label>
+                                `).join('')}
+                            </div>
+                        </div>
+
+                        <div>
+                            <b>Στοιχεία που θα καταχωρηθούν</b>
+                            <div style="margin-top:7px;display:grid;gap:8px;">
+                                ${actionRows.map(action => `
+                                    <label style="display:grid;grid-template-columns:24px minmax(0,1fr);gap:7px;border:1px solid #ccd1d1;border-radius:5px;padding:9px;cursor:pointer;">
+                                        <input type="checkbox" class="mc-preview-action" value="${action.key}" checked>
+                                        <span>
+                                            <b>${escapeHtml(action.title)}</b>
+                                            <span style="display:block;margin-top:4px;white-space:pre-wrap;color:#34495e;max-height:115px;overflow:auto;">${escapeHtml(action.text)}</span>
+                                        </span>
+                                    </label>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="position:sticky;bottom:0;background:#f7f9f9;border-top:1px solid #ccd1d1;padding:11px 14px;display:flex;justify-content:flex-end;gap:8px;">
+                        <button type="button" id="mc-preview-cancel">Ακύρωση</button>
+                        <button type="button" id="mc-preview-confirm" style="background:#d5f5e3;font-weight:bold;padding:7px 15px;">Τελική καταχώρηση</button>
+                    </div>
+                </div>
+            `;
+
+            const finish = value => {
+                overlay.remove();
+                resolve(value);
+            };
+
+            overlay.querySelector('#mc-preview-close').onclick = () => finish(null);
+            overlay.querySelector('#mc-preview-cancel').onclick = () => finish(null);
+            overlay.onclick = event => {
+                if (event.target === overlay) finish(null);
+            };
+            overlay.querySelector('#mc-preview-confirm').onclick = () => {
+                const selectedPatients = [...overlay.querySelectorAll('.mc-preview-patient:checked')]
+                    .map(input => input.value);
+                const selectedActions = new Set(
+                    [...overlay.querySelectorAll('.mc-preview-action:checked')]
+                        .map(input => input.value)
+                );
+
+                if (!selectedPatients.length) {
+                    alert('Επίλεξε τουλάχιστον έναν ασθενή.');
+                    return;
+                }
+
+                if (!selectedActions.size) {
+                    alert('Επίλεξε τουλάχιστον ένα στοιχείο για καταχώρηση.');
+                    return;
+                }
+
+                finish({ selectedPatients, selectedActions });
+            };
+
+            doc.body.appendChild(overlay);
+        });
     }
 
     function openMedicalCardPanel() {
@@ -2057,17 +2378,7 @@ async function sendVialsOrders() {
                     <label><b>Αντιπηκτική αγωγή</b></label>
                     <select id="mc-anticoagulation" style="width:100%;margin-top:4px;">
                         <option value="">-- Επιλογή --</option>
-                        <option value="Xarelto10">Xarelto 10mg</option>
-                        <option value="Xarelto20">Xarelto 20mg</option>
-                        <option value="Eliquis5">Eliquis 5mg</option>
-                        <option value="Eliquis2.5">Eliquis 2.5mg</option>
-                        <option value="Pradaxa">Pradaxa</option>
-                        <option value="Sintrom">Sintrom</option>
-                        <option value="Ivor3500">Ivor 3500</option>
-                        <option value="Ivor2500">Ivor 2500</option>
-                        <option value="Clexane40">Clexane 4000</option>
-                        <option value="Clexane60">Clexane 6000</option>
-                        <option value="Arixtra2.5">Arixtra 2500</option>
+                        ${renderAnticoagulationOptions()}
                         </select>
 
                     <div style="margin-top:10px;">
@@ -2078,7 +2389,12 @@ async function sendVialsOrders() {
             </div>
 
             <div style="margin-top:10px;">
-                <label><b>Πρότυπο Περιστατικού</b></label>
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <label><b>Πρότυπο Περιστατικού</b></label>
+                    <button type="button" id="mc-save-current-as-preset" style="cursor:pointer;">
+                        Αποθήκευση καρτέλας ως preset
+                    </button>
+                </div>
                 <select id="mc-preset" style="width:100%;margin-top:4px;">
                     <option value="">-- Επιλογή --</option>
                     ${Object.keys(MEDICAL_CARD_PRESETS).sort((a,b) => a.localeCompare(b, "el")).map(k => `
@@ -2385,6 +2701,7 @@ async function sendVialsOrders() {
         }
 
         doc.getElementById("medical-card-close").onclick = () => panel.remove();
+        doc.getElementById("mc-save-current-as-preset").onclick = saveCurrentMedicalCardAsPreset;
 
         const left = doc.getElementById("mc-left");
         const right = doc.getElementById("mc-right");
@@ -2469,60 +2786,28 @@ async function sendVialsOrders() {
             const therapy = doc.getElementById("mc-treatment").value.trim();
             const dischargeInstructions =
                doc.getElementById("mc-discharge-instructions").value.trim();
-            const anticoagulation = doc.getElementById("mc-anticoagulation")?.value || "";
-            const followupDate = doc.getElementById("mc-followup-date")?.value || "";
 
             const company = doc.getElementById("mc-company").value.trim();
             const left = doc.getElementById("mc-left").checked;
             const right = doc.getElementById("mc-right").checked;
 
             const patients = selectedPatientsFull();
-
             const dateText = getMedicalCardSelectedDate();
-
             const selectedDiagnosis = getSelectedDiagnosisObject();
             const selectedDoctorId = getSelectedMedicalCardDoctorId();
             const selectedMedicalAct = getSelectedMedicalActObject();
 
-            if (selectedMedicalAct && !selectedDoctorId) {
-                alert("Για καταχώρηση ιατρικής πράξης πρέπει να επιλέξεις Θεράποντα Ιατρό.");
-                return;
-            }
-
-            if (selectedDiagnosis && !selectedDoctorId) {
-                alert("Για καταχώρηση διάγνωσης πρέπει να επιλέξεις Θεράποντα Ιατρό.");
-                return;
-            }
-
-            if (selectedMedicalAct && selectedMedicalAct.requireLr?.value && !getMedicalActLocation()) {
-                alert("Η ιατρική πράξη απαιτεί πλευρά: Αριστερά ή Δεξιά.");
-                return;
-            }
-
             let suffix = "";
+            if (left) suffix += " - Αριστερά";
+            if (right) suffix += " - Δεξιά";
+            if (company) suffix += " - " + company;
 
-            if (left) {
-                suffix += " - Αριστερά";
-            }
-
-            if (right) {
-                suffix += " - Δεξιά";
-            }
-
-            if (company) {
-                suffix += " - " + company;
-            }
-
-            const finalCourse =
-                course
-                    ? `${dateText} - ${course}${suffix}`
-                    : "";
-
-            const finalTherapy =
-                therapy
-                    ? `${dateText} - ${therapy}${suffix}`
-                    : "";
-
+            const finalCourse = course
+                ? `${dateText} - ${course}${suffix}`
+                : "";
+            const finalTherapy = therapy
+                ? `${dateText} - ${therapy}${suffix}`
+                : "";
             const finalDischargeInstructions = dischargeInstructions.trim();
 
             if (!patients.length) {
@@ -2530,24 +2815,57 @@ async function sendVialsOrders() {
                 return;
             }
 
-            if (!course && !therapy && !selectedDiagnosis && !selectedMedicalAct && !dischargeInstructions) {
-                alert("Δεν έχεις συμπληρώσει Πορεία Νόσου, Θεραπευτική Αγωγή, Διάγνωση, Ιατρική Πράξη ή Οδηγίες κατά την έξοδο.");
+            const surgeryPanel = doc.getElementById("mc-surgery-panel");
+            const surgeryEnabled = Boolean(
+                surgeryPanel && isSurgeryPanelOpen()
+            );
+            const surgeryDescription =
+                doc.getElementById('mc-surgery-description')?.value || '';
+
+            if (!course && !therapy && !selectedDiagnosis && !selectedMedicalAct &&
+                !dischargeInstructions && !surgeryEnabled) {
+                alert("Δεν έχεις συμπληρώσει κάποιο στοιχείο για καταχώρηση.");
                 return;
             }
 
-            if (!confirm(
-                `Θα γίνει καταχώρηση στην Ιατρική Καρτέλα για ${patients.length} ασθενείς.\n\n` +
-                `Ημερομηνία: ${dateText}\n\n` +
-                `Να συνεχίσω;`
-            )) {
+            const preview = await showMedicalCardPreview({
+                patients,
+                dateText,
+                selectedDiagnosis,
+                selectedMedicalAct,
+                finalCourse,
+                finalTherapy,
+                finalDischargeInstructions,
+                surgeryDescription,
+                surgeryEnabled
+            });
+
+            if (!preview) return;
+
+            const actions = preview.selectedActions;
+            const targetPatients = patients.filter(patient =>
+                preview.selectedPatients.includes(String(patient.encounterNr))
+            );
+
+            if ((actions.has('medicalAct') || actions.has('diagnosis')) && !selectedDoctorId) {
+                alert("Για καταχώρηση διάγνωσης ή ιατρικής πράξης πρέπει να επιλέξεις Θεράποντα Ιατρό.");
+                return;
+            }
+
+            if (
+                actions.has('medicalAct') &&
+                selectedMedicalAct?.requireLr?.value &&
+                !getMedicalActLocation()
+            ) {
+                alert("Η ιατρική πράξη απαιτεί πλευρά: Αριστερά ή Δεξιά.");
                 return;
             }
 
             medicalCardLog(
-                `📝 Ξεκινά καταχώρηση στην Ιατρική Καρτέλα για ${patients.length} ασθενείς...`
+                `📝 Ξεκινά καταχώρηση στην Ιατρική Καρτέλα για ${targetPatients.length} ασθενείς...`
             );
 
-            for (const p of patients) {
+            for (const p of targetPatients) {
                 try {
                     medicalCardLog(`⏳ ${p.label}`);
 
@@ -2556,120 +2874,77 @@ async function sendVialsOrders() {
                         medicalActLinkId: ""
                     };
 
-                    const patientIds = await getDiagnosisIds(p.encounterNr);
+                    const needsPatientIds =
+                        actions.has('diagnosis') ||
+                        actions.has('medicalAct') ||
+                        actions.has('surgery');
+
+                    const patientIds = needsPatientIds
+                        ? await getDiagnosisIds(p.encounterNr)
+                        : { pnurId: '', ipdiId: '' };
+
                     let diagnosisIdForSurgery = "";
                     let medicalActLinkIdForSurgery = "";
 
-                    if (selectedDiagnosis) {
-                        const diagnosisSaveResult =
-                            await saveDiagnosis(
-                                p.encounterNr,
-                                selectedDiagnosis,
-                                selectedDoctorId
-                            );
-
-                        diagnosisIdForSurgery =
-                            diagnosisSaveResult.diagnosisId;
-
-                        console.log(
-                            "DIAGNOSIS SAVE RESULT:",
-                            diagnosisSaveResult
+                    if (actions.has('diagnosis') && selectedDiagnosis) {
+                        const diagnosisSaveResult = await saveDiagnosis(
+                            p.encounterNr,
+                            selectedDiagnosis,
+                            selectedDoctorId
                         );
-
-                        medicalCardLog(
-                            `✅ Διάγνωση: ${selectedDiagnosis.code}`
-                        );
+                        diagnosisIdForSurgery = diagnosisSaveResult.diagnosisId;
+                        medicalCardLog(`✅ Διάγνωση: ${selectedDiagnosis.code}`);
                     }
 
-                    if (selectedMedicalAct) {
-                        const medicalActSaveResult =
-                            await saveMedicalAct(
-                                p.encounterNr,
-                                patientIds.pnurId,
-                                patientIds.ipdiId,
-                                selectedMedicalAct,
-                                selectedDoctorId
-                            );
-
+                    if (actions.has('medicalAct') && selectedMedicalAct) {
+                        const medicalActSaveResult = await saveMedicalAct(
+                            p.encounterNr,
+                            patientIds.pnurId,
+                            patientIds.ipdiId,
+                            selectedMedicalAct,
+                            selectedDoctorId
+                        );
                         medicalActLinkIdForSurgery =
                             medicalActSaveResult.medicalActLinkId;
-
-                        console.log(
-                            "MEDICAL ACT SAVE RESULT:",
-                            medicalActSaveResult
-                        );
-
-                        medicalCardLog(
-                            `✅ Ιατρική πράξη: ${selectedMedicalAct.code}`
-                        );
+                        medicalCardLog(`✅ Ιατρική πράξη: ${selectedMedicalAct.code}`);
                     }
 
-                    if (finalCourse) {
-                        await saveCourse(
-                            p.encounterNr,
-                            finalCourse,
-                            dateText
-                        );
+                    if (actions.has('course') && finalCourse) {
+                        await saveCourse(p.encounterNr, finalCourse, dateText);
+                        medicalCardLog('✅ Πορεία νόσου');
                     }
 
-                    if (finalTherapy) {
-                        await saveTherapy(
-                            p.encounterNr,
-                            finalTherapy,
-                            dateText
-                        );
-
+                    if (actions.has('therapy') && finalTherapy) {
+                        await saveTherapy(p.encounterNr, finalTherapy, dateText);
+                        medicalCardLog('✅ Θεραπευτική αγωγή');
                     }
 
-                    if (finalDischargeInstructions) {
+                    if (actions.has('discharge') && finalDischargeInstructions) {
                         await saveDischargeInstructions(
                             p.encounterNr,
                             finalDischargeInstructions,
                             dateText
                         );
-
-                        medicalCardLog(`✅ Οδηγίες εξόδου`);
+                        medicalCardLog('✅ Οδηγίες εξόδου');
                     }
 
-                    const surgeryPanel =
-                        doc.getElementById("mc-surgery-panel");
-
-                    const shouldSaveSurgery =
-                        surgeryPanel &&
-                        isSurgeryPanelOpen();
-
-
-                    if (shouldSaveSurgery) {
-                        const surgeryResult =
-                            await saveSurgeryReport({
-                                encounterNr: p.encounterNr,
-                                pnurId: patientIds.pnurId,
-
-                                diagnosisId:
-                                    diagnosisIdForSurgery,
-
-                                medicalActLinkId:
-                                    medicalActLinkIdForSurgery
-                            });
-
-                        console.log(
-                            "SURGERY SAVE RESULT:",
-                            surgeryResult
-                        );
-
-                        medicalCardLog(
-                            `✅ ${p.room}/${p.bed} - ${p.name}: Πρακτικό χειρουργείου καταχωρήθηκε`
-                        );
-                    }    
+                    if (actions.has('surgery') && surgeryEnabled) {
+                        await saveSurgeryReport({
+                            encounterNr: p.encounterNr,
+                            pnurId: patientIds.pnurId,
+                            diagnosisId: diagnosisIdForSurgery,
+                            medicalActLinkId: medicalActLinkIdForSurgery
+                        });
+                        medicalCardLog(`✅ ${p.room}/${p.bed}: Πρακτικό χειρουργείου`);
+                    }
 
                     medicalCardLog(`✅ ${p.label}`);
-
                 } catch (e) {
                     medicalCardLog(`❌ ${p.label}: ${e.message}`);
                     console.error(e);
                 }
 
-                await new Promise(r => setTimeout(r, 500));
+                await new Promise(resolve => setTimeout(resolve, 500));
             }
 
             medicalCardLog("🏁 Ολοκληρώθηκε η καταχώρηση στην Ιατρική Καρτέλα.");
@@ -3759,10 +4034,22 @@ async function validateMedicalAct(
     A.runtime = A.runtime || {};
     A.runtime.getSelectedPatientsFull = () =>
         selectedPatientsFull().map(patient => ({ ...patient }));
+    A.runtime.getAllPatients = () => {
+        const doc = getNursingFrame()?.document;
+        if (!doc) return [];
+        return getPatients(doc).map(patient => ({
+            ...patient,
+            label: `${patient.room}/${patient.bed} - ${patient.patientName}`,
+            name: patient.patientName
+        }));
+    };
+    A.runtime.getNursingFrame = getNursingFrame;
     A.runtime.getDoctors = () =>
         DOCTORS.map(doctor => ({ ...doctor }));
     A.runtime.getWardNumber = () => "57";
     A.runtime.updateDischargeInstructions = updateDischargeInstructions;
+    A.runtime.refreshMedicalCardAnticoagulationSelect = refreshMedicalCardAnticoagulationSelect;
+    A.runtime.getAnticoagulationEntries = () => getAnticoagulationEntries().map(entry => ({ ...entry }));
 
     window.addEventListener('asklipios:data-changed', () => {
         try {
