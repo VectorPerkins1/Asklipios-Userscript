@@ -1,6 +1,6 @@
 /*
  * Asklipios — Live Clinical Catalog
- * Version 0.11.0
+ * Version 0.12.0
  *
  * Searches the official Care ICD-10 and medical-act endpoints using the
  * active authenticated session. No patient information is persisted.
