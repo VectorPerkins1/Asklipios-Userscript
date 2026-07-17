@@ -1,6 +1,6 @@
 /*
  * Asklipios — Clinical Presets & Surgery Templates Settings
- * Version 0.9.0
+ * Version 0.10.0
  */
 
 (function () {
@@ -252,6 +252,7 @@
             course: A.data.MEDICAL_CARD_PRESETS?.[key]?.course || '',
             therapy: A.data.MEDICAL_CARD_PRESETS?.[key]?.therapy || '',
             discharge: A.data.PRESET_DISCHARGE_TEXTS?.[key] || '',
+            surgeryReport: A.data.SURGERY_DESCRIPTIONS?.[key] || '',
             diagnoses: clone(A.data.DIAGNOSIS_OPTIONS?.[key] || []),
             medicalActs: clone(A.data.MEDICAL_ACT_OPTIONS?.[key] || [])
         };
@@ -551,12 +552,32 @@
             !draft.discharge.trim()
         );
 
+        if (state.presetMode === 'new') {
+            writePresetSection(
+                'SURGERY_DESCRIPTIONS',
+                newKey,
+                draft.surgeryReport,
+                !draft.surgeryReport.trim()
+            );
+        } else if (oldKey && oldKey !== newKey) {
+            const linkedSurgeryReport =
+                A.data.SURGERY_DESCRIPTIONS?.[oldKey] || '';
+
+            writePresetSection(
+                'SURGERY_DESCRIPTIONS',
+                newKey,
+                linkedSurgeryReport,
+                !linkedSurgeryReport.trim()
+            );
+        }
+
         if (state.presetMode === 'edit' && oldKey && oldKey !== newKey) {
             for (const section of [
                 'MEDICAL_CARD_PRESETS',
                 'DIAGNOSIS_OPTIONS',
                 'MEDICAL_ACT_OPTIONS',
-                'PRESET_DISCHARGE_TEXTS'
+                'PRESET_DISCHARGE_TEXTS',
+                'SURGERY_DESCRIPTIONS'
             ]) {
                 A.registry.deleteMapItem(section, oldKey);
             }
@@ -581,7 +602,8 @@
             'MEDICAL_CARD_PRESETS',
             'DIAGNOSIS_OPTIONS',
             'MEDICAL_ACT_OPTIONS',
-            'PRESET_DISCHARGE_TEXTS'
+            'PRESET_DISCHARGE_TEXTS',
+            'SURGERY_DESCRIPTIONS'
         ]) {
             A.registry.deleteMapItem(section, key);
         }
@@ -610,7 +632,8 @@
             'MEDICAL_CARD_PRESETS',
             'DIAGNOSIS_OPTIONS',
             'MEDICAL_ACT_OPTIONS',
-            'PRESET_DISCHARGE_TEXTS'
+            'PRESET_DISCHARGE_TEXTS',
+            'SURGERY_DESCRIPTIONS'
         ]) {
             A.registry.restoreMapItem(section, state.presetKey);
         }
@@ -628,7 +651,8 @@
             'MEDICAL_CARD_PRESETS',
             'DIAGNOSIS_OPTIONS',
             'MEDICAL_ACT_OPTIONS',
-            'PRESET_DISCHARGE_TEXTS'
+            'PRESET_DISCHARGE_TEXTS',
+            'SURGERY_DESCRIPTIONS'
         ]) {
             A.registry.resetSection(section);
         }
@@ -786,86 +810,157 @@
     }
 
     function ensureSurgerySelection() {
-        if (state.surgeryDraft) return;
-        const first = sortedKeys(A.data.SURGERY_DESCRIPTIONS)[0] || '';
+        const presetKeys = sortedKeys(A.data.MEDICAL_CARD_PRESETS);
+
+        if (
+            state.surgeryKey &&
+            presetKeys.includes(state.surgeryKey) &&
+            state.surgeryDraft
+        ) {
+            return;
+        }
+
+        const first = presetKeys[0] || '';
         state.surgeryKey = first;
-        state.surgeryMode = first ? 'edit' : 'new';
+        state.surgeryMode = 'edit';
         state.surgeryDraft = createSurgeryDraft(first);
+    }
+
+    function getSurgeryLocalState(key) {
+        const localState = A.registry.getState();
+        const patch = localState.mapPatches?.SURGERY_DESCRIPTIONS || {
+            upserts: {},
+            deleted: []
+        };
+        const factory = A.registry.getFactorySection('SURGERY_DESCRIPTIONS') || {};
+
+        return {
+            hasFactory: Object.prototype.hasOwnProperty.call(factory, key),
+            isModified: Object.prototype.hasOwnProperty.call(
+                patch.upserts || {},
+                key
+            ),
+            isCleared: (patch.deleted || []).includes(key),
+            hasEffectiveText: Boolean(
+                String(A.data.SURGERY_DESCRIPTIONS?.[key] || '').trim()
+            )
+        };
     }
 
     function saveSurgeryTemplate() {
         const doc = getDocument();
-        const name = doc?.getElementById('ask-surgery-template-name')?.value.trim() || '';
-        const description = doc?.getElementById('ask-surgery-template-description')?.value.trim() || '';
-        if (!name) throw new Error('Το όνομα του πρακτικού είναι υποχρεωτικό.');
-        if (!description) throw new Error('Η περιγραφή του πρακτικού είναι κενή.');
+        const key = state.surgeryKey;
+        const description =
+            doc?.getElementById('ask-surgery-template-description')?.value || '';
 
-        if (
-            name !== state.surgeryKey &&
-            Object.prototype.hasOwnProperty.call(A.data.SURGERY_DESCRIPTIONS || {}, name)
-        ) {
-            throw new Error(`Υπάρχει ήδη πρότυπο πρακτικού με όνομα "${name}".`);
+        if (!key || !A.data.MEDICAL_CARD_PRESETS?.[key]) {
+            throw new Error('Επίλεξε πρώτα ένα preset περιστατικού.');
         }
 
         A.localData.createBackup();
-        A.registry.setMapItem('SURGERY_DESCRIPTIONS', name, description);
-        if (state.surgeryMode === 'edit' && state.surgeryKey && state.surgeryKey !== name) {
-            A.registry.deleteMapItem('SURGERY_DESCRIPTIONS', state.surgeryKey);
+
+        if (description.trim()) {
+            A.registry.setMapItem(
+                'SURGERY_DESCRIPTIONS',
+                key,
+                description
+            );
+        } else {
+            A.registry.deleteMapItem(
+                'SURGERY_DESCRIPTIONS',
+                key
+            );
         }
 
-        state.surgeryKey = name;
-        state.surgeryMode = 'edit';
-        state.surgeryDraft = createSurgeryDraft(name);
+        state.surgeryDraft = createSurgeryDraft(key);
         refreshRuntimeControls();
         renderSurgeryTab();
-        setStatus(`Το πρότυπο πρακτικού "${name}" αποθηκεύτηκε.`, 'success');
+
+        setStatus(
+            description.trim()
+                ? `Το πρακτικό για το preset "${key}" αποθηκεύτηκε.`
+                : `Το πρακτικό για το preset "${key}" αποθηκεύτηκε κενό.`,
+            'success'
+        );
     }
 
-    function deleteSurgeryTemplate() {
-        if (!state.surgeryKey || state.surgeryMode !== 'edit') return;
+    function clearSurgeryTemplate() {
         const key = state.surgeryKey;
-        if (!confirm(`Να διαγραφεί το πρότυπο πρακτικού "${key}";`)) return;
+        if (!key) return;
+
+        if (!confirm(`Να γίνει κενό το πρακτικό για το preset "${key}";`)) {
+            return;
+        }
+
         A.localData.createBackup();
         A.registry.deleteMapItem('SURGERY_DESCRIPTIONS', key);
-        const next = sortedKeys(A.data.SURGERY_DESCRIPTIONS)[0] || '';
-        state.surgeryKey = next;
-        state.surgeryMode = next ? 'edit' : 'new';
-        state.surgeryDraft = createSurgeryDraft(next);
+        state.surgeryDraft = createSurgeryDraft(key);
         refreshRuntimeControls();
         renderSurgeryTab();
-        setStatus(`Το πρότυπο "${key}" αφαιρέθηκε τοπικά.`, 'success');
+        setStatus(`Το πρακτικό για το "${key}" είναι πλέον κενό.`, 'success');
     }
 
     function restoreSurgeryTemplate() {
+        const key = state.surgeryKey;
+        if (!key) return;
+
         const factory = A.registry.getFactorySection('SURGERY_DESCRIPTIONS') || {};
-        if (!Object.prototype.hasOwnProperty.call(factory, state.surgeryKey)) {
-            setStatus('Το συγκεκριμένο πρότυπο δεν έχει εργοστασιακή έκδοση.', 'warning');
+        const hasFactory = Object.prototype.hasOwnProperty.call(factory, key);
+
+        if (!confirm(
+            hasFactory
+                ? `Να επανέλθει το πρακτικό του "${key}" στην εργοστασιακή μορφή;`
+                : `Το "${key}" δεν έχει εργοστασιακό κείμενο. Να αφαιρεθεί η τοπική αλλαγή και να μείνει κενό;`
+        )) {
             return;
         }
-        if (!confirm(`Να επανέλθει το "${state.surgeryKey}" στην εργοστασιακή μορφή;`)) return;
+
         A.localData.createBackup();
-        A.registry.restoreMapItem('SURGERY_DESCRIPTIONS', state.surgeryKey);
-        state.surgeryDraft = createSurgeryDraft(state.surgeryKey);
+        A.registry.restoreMapItem('SURGERY_DESCRIPTIONS', key);
+        state.surgeryDraft = createSurgeryDraft(key);
         refreshRuntimeControls();
         renderSurgeryTab();
-        setStatus('Το πρότυπο πρακτικού επανήλθε.', 'success');
+        setStatus(
+            hasFactory
+                ? 'Το πρακτικό επανήλθε στην εργοστασιακή μορφή.'
+                : 'Η τοπική αλλαγή αφαιρέθηκε και το πρακτικό έμεινε κενό.',
+            'success'
+        );
     }
 
     function renderSurgeryList() {
         const doc = getDocument();
         const list = doc?.getElementById('ask-surgery-template-list');
         if (!list) return;
+
         const query = state.surgerySearch.trim().toLocaleLowerCase('el');
-        const keys = sortedKeys(A.data.SURGERY_DESCRIPTIONS).filter(key =>
+        const keys = sortedKeys(A.data.MEDICAL_CARD_PRESETS).filter(key =>
             key.toLocaleLowerCase('el').includes(query)
         );
+
         list.innerHTML = keys.length
             ? keys.map(key => {
-                const mod = getModificationState('SURGERY_DESCRIPTIONS', key);
-                const badge = mod.isCustom ? 'Νέο' : mod.isModified ? 'Τροποποιημένο' : '';
-                return `<button type="button" class="ask-clinical-item ${state.surgeryMode === 'edit' && key === state.surgeryKey ? 'active' : ''}" data-key="${escapeHtml(key)}">${escapeHtml(key)}${badge ? `<span class="ask-muted"> — ${badge}</span>` : ''}</button>`;
+                const local = getSurgeryLocalState(key);
+                const badge = local.isModified
+                    ? 'Τροποποιημένο'
+                    : local.isCleared
+                        ? 'Κενό'
+                        : local.hasEffectiveText
+                            ? 'Έτοιμο'
+                            : 'Κενό';
+
+                return `
+                    <button
+                        type="button"
+                        class="ask-clinical-item ${key === state.surgeryKey ? 'active' : ''}"
+                        data-key="${escapeHtml(key)}"
+                    >
+                        ${escapeHtml(key)}
+                        <span class="ask-muted"> — ${badge}</span>
+                    </button>
+                `;
             }).join('')
-            : '<div class="ask-muted" style="padding:12px;">Δεν βρέθηκαν πρότυπα.</div>';
+            : '<div class="ask-muted" style="padding:12px;">Δεν βρέθηκαν presets.</div>';
 
         list.querySelectorAll('.ask-clinical-item').forEach(button => {
             button.onclick = () => {
@@ -881,70 +976,131 @@
         const doc = getDocument();
         const content = doc?.getElementById('asklipios-settings-content');
         if (!content) return;
+
         ensureStyle(doc);
         ensureSurgerySelection();
-        const mod = state.surgeryMode === 'edit'
-            ? getModificationState('SURGERY_DESCRIPTIONS', state.surgeryKey)
-            : { isFactory: false };
+
+        const local = state.surgeryKey
+            ? getSurgeryLocalState(state.surgeryKey)
+            : {
+                hasFactory: false,
+                hasEffectiveText: false
+            };
 
         content.innerHTML = `
             <div class="ask-clinical-grid">
                 <div class="ask-card">
-                    <div class="ask-editor-toolbar">
-                        <button type="button" id="ask-new-surgery-template" class="ask-btn ask-btn-primary">+ Νέο</button>
-                        <button type="button" id="ask-duplicate-surgery-template" class="ask-btn">Αντιγραφή</button>
-                    </div>
-                    <input id="ask-surgery-search" class="ask-input" placeholder="Αναζήτηση πρακτικού" value="${escapeHtml(state.surgerySearch)}">
-                    <div id="ask-surgery-template-list" class="ask-clinical-list"></div>
-                    <button type="button" id="ask-reset-surgery-templates" class="ask-btn ask-btn-danger" style="width:100%;margin-top:10px;">Επαναφορά όλων των πρακτικών</button>
+                    <input
+                        id="ask-surgery-search"
+                        class="ask-input"
+                        placeholder="Αναζήτηση preset"
+                        value="${escapeHtml(state.surgerySearch)}"
+                    >
+
+                    <div
+                        id="ask-surgery-template-list"
+                        class="ask-clinical-list"
+                    ></div>
+
+                    <button
+                        type="button"
+                        id="ask-reset-surgery-templates"
+                        class="ask-btn ask-btn-danger"
+                        style="width:100%;margin-top:10px;"
+                    >
+                        Επαναφορά όλων των πρακτικών
+                    </button>
                 </div>
 
                 <div class="ask-card ask-template-editor">
                     <div class="ask-editor-toolbar">
-                        <button type="button" id="ask-save-surgery-template" class="ask-btn ask-btn-success">Αποθήκευση πρακτικού</button>
-                        <button type="button" id="ask-delete-surgery-template" class="ask-btn ask-btn-danger" ${state.surgeryMode === 'new' ? 'disabled' : ''}>Διαγραφή</button>
-                        <button type="button" id="ask-restore-surgery-template" class="ask-btn" ${state.surgeryMode === 'edit' && mod.isFactory ? '' : 'disabled'}>Επαναφορά εργοστασιακού</button>
+                        <button
+                            type="button"
+                            id="ask-save-surgery-template"
+                            class="ask-btn ask-btn-success"
+                            ${state.surgeryKey ? '' : 'disabled'}
+                        >
+                            Αποθήκευση πρακτικού
+                        </button>
+
+                        <button
+                            type="button"
+                            id="ask-clear-surgery-template"
+                            class="ask-btn ask-btn-danger"
+                            ${state.surgeryKey ? '' : 'disabled'}
+                        >
+                            Κενό πρακτικό
+                        </button>
+
+                        <button
+                            type="button"
+                            id="ask-restore-surgery-template"
+                            class="ask-btn"
+                            ${state.surgeryKey ? '' : 'disabled'}
+                        >
+                            ${local.hasFactory ? 'Επαναφορά εργοστασιακού' : 'Αφαίρεση τοπικής αλλαγής'}
+                        </button>
                     </div>
-                    <label class="ask-form-label">Όνομα προτύπου πρακτικού</label>
-                    <input id="ask-surgery-template-name" class="ask-input" value="${escapeHtml(state.surgeryDraft.name)}">
-                    <div style="margin-top:10px;"><label class="ask-form-label">Περιγραφή επέμβασης</label><textarea id="ask-surgery-template-description" class="ask-input" style="min-height:420px;">${escapeHtml(state.surgeryDraft.description)}</textarea></div>
-                    <div class="ask-muted" style="margin-top:7px;">Το πρότυπο θα εμφανίζεται στο νέο dropdown «Πρότυπο πρακτικού» μέσα στην Ιατρική Καρτέλα.</div>
+
+                    <label class="ask-form-label">
+                        Πρότυπο περιστατικού
+                    </label>
+
+                    <input
+                        class="ask-input"
+                        value="${escapeHtml(state.surgeryDraft?.name || '')}"
+                        readonly
+                        style="background:#f4f6f7;"
+                    >
+
+                    <div style="margin-top:10px;">
+                        <label class="ask-form-label">
+                            Πρότυπο πρακτικού χειρουργείου
+                        </label>
+
+                        <textarea
+                            id="ask-surgery-template-description"
+                            class="ask-input"
+                            style="min-height:470px;"
+                            placeholder="Αν δεν υπάρχει πρότυπο πρακτικού, άφησέ το κενό."
+                        >${escapeHtml(state.surgeryDraft?.description || '')}</textarea>
+                    </div>
+
+                    <div class="ask-muted" style="margin-top:7px;">
+                        Το κείμενο συνδέεται αυτόματα με το επιλεγμένο preset περιστατικού.
+                        Δεν υπάρχει ξεχωριστή επιλογή προτύπου μέσα στην Ιατρική Καρτέλα.
+                    </div>
                 </div>
             </div>
         `;
 
-        doc.getElementById('ask-new-surgery-template').onclick = () => {
-            state.surgeryMode = 'new';
-            state.surgeryKey = '';
-            state.surgeryDraft = createSurgeryDraft('');
-            renderSurgeryTab();
-            doc.getElementById('ask-surgery-template-name')?.focus();
-        };
-        doc.getElementById('ask-duplicate-surgery-template').onclick = () => {
-            const name = doc.getElementById('ask-surgery-template-name')?.value.trim() || state.surgeryDraft.name;
-            const description = doc.getElementById('ask-surgery-template-description')?.value || state.surgeryDraft.description;
-            state.surgeryMode = 'new';
-            state.surgeryKey = '';
-            state.surgeryDraft = { name: `${name} - ΑΝΤΙΓΡΑΦΟ`, description };
-            renderSurgeryTab();
-        };
         doc.getElementById('ask-surgery-search').oninput = event => {
             state.surgerySearch = event.target.value;
             renderSurgeryList();
         };
+
         doc.getElementById('ask-save-surgery-template').onclick = () => {
-            try { saveSurgeryTemplate(); } catch (error) { setStatus(error.message, 'error'); }
+            try {
+                saveSurgeryTemplate();
+            } catch (error) {
+                setStatus(error.message, 'error');
+            }
         };
-        doc.getElementById('ask-delete-surgery-template').onclick = deleteSurgeryTemplate;
-        doc.getElementById('ask-restore-surgery-template').onclick = restoreSurgeryTemplate;
+
+        doc.getElementById('ask-clear-surgery-template').onclick =
+            clearSurgeryTemplate;
+
+        doc.getElementById('ask-restore-surgery-template').onclick =
+            restoreSurgeryTemplate;
+
         doc.getElementById('ask-reset-surgery-templates').onclick = () => {
-            if (!confirm('Να διαγραφούν όλες οι τοπικές αλλαγές των πρακτικών;')) return;
+            if (!confirm('Να διαγραφούν όλες οι τοπικές αλλαγές των πρακτικών;')) {
+                return;
+            }
+
             A.localData.createBackup();
             A.registry.resetSection('SURGERY_DESCRIPTIONS');
-            const first = sortedKeys(A.data.SURGERY_DESCRIPTIONS)[0] || '';
-            state.surgeryKey = first;
-            state.surgeryMode = first ? 'edit' : 'new';
-            state.surgeryDraft = createSurgeryDraft(first);
+            state.surgeryDraft = createSurgeryDraft(state.surgeryKey);
             refreshRuntimeControls();
             renderSurgeryTab();
             setStatus('Τα πρακτικά επανήλθαν στις εργοστασιακές τιμές.', 'success');
@@ -964,20 +1120,8 @@
         if (keys.includes(previous)) select.value = previous;
     }
 
-    function refreshSurgeryTemplateSelect() {
-        const doc = getDocument();
-        const select = doc?.getElementById('mc-surgery-template');
-        if (!select) return;
-        const previous = select.value;
-        const keys = sortedKeys(A.data.SURGERY_DESCRIPTIONS);
-        select.innerHTML = '<option value="">-- Χωρίς πρότυπο --</option>' +
-            keys.map(key => `<option value="${escapeHtml(key)}">${escapeHtml(key)}</option>`).join('');
-        if (keys.includes(previous)) select.value = previous;
-    }
-
     function refreshRuntimeControls() {
         refreshMedicalPresetSelect();
-        refreshSurgeryTemplateSelect();
         A.settingsUi.refresh();
     }
 
@@ -994,7 +1138,7 @@
 
     A.modules.clinicalSettingsUi = {
         loaded: true,
-        version: '0.9.0'
+        version: '0.10.0'
     };
 
     console.log('Asklipios clinical settings UI loaded');
