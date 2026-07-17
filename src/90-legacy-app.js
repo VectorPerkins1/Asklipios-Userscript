@@ -1,11 +1,15 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.6.0
+ * Version 0.7.0
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
  * - 30-xray-data.js
+ *
+ * Local overrides are applied before this file by:
+ * - 15-local-data-store.js
+ * - 35-data-registry.js
  *
  * This file contains the remaining application logic and UI.
  */
@@ -74,7 +78,7 @@
     A.modules = A.modules || {};
     A.modules.legacyApp = {
         loaded: true,
-        version: '0.6.0'
+        version: '0.7.0'
     };
 
 
