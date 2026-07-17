@@ -1,7 +1,7 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.8.0
+ * Version 0.9.0
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
@@ -78,7 +78,7 @@
     A.modules = A.modules || {};
     A.modules.legacyApp = {
         loaded: true,
-        version: '0.8.0'
+        version: '0.9.0'
     };
 
 
@@ -2251,6 +2251,31 @@ async function sendVialsOrders() {
                 </div>
 
                 <div style="margin-top:12px;">
+                    <label for="mc-surgery-template">
+                        <b>Πρότυπο πρακτικού</b>
+                    </label>
+
+                    <select
+                        id="mc-surgery-template"
+                        style="
+                            width:100%;
+                            box-sizing:border-box;
+                            margin-top:4px;
+                        "
+                    >
+                        <option value="">-- Χωρίς πρότυπο --</option>
+                        ${Object.keys(SURGERY_DESCRIPTIONS)
+                            .sort((a, b) => a.localeCompare(b, "el"))
+                            .map(name => `
+                                <option value="${escapeHtml(name)}">
+                                    ${escapeHtml(name)}
+                                </option>
+                            `)
+                            .join("")}
+                    </select>
+                </div>
+
+                <div style="margin-top:12px;">
                     <label for="mc-surgery-description">
                         <b>Περιγραφή επέμβασης</b>
                     </label>
@@ -2351,6 +2376,23 @@ async function sendVialsOrders() {
             });
         }
 
+        const surgeryTemplateSelect =
+            doc.getElementById("mc-surgery-template");
+
+        if (surgeryTemplateSelect) {
+            surgeryTemplateSelect.addEventListener("change", () => {
+                const descriptionBox =
+                    doc.getElementById("mc-surgery-description");
+
+                if (descriptionBox) {
+                    descriptionBox.value =
+                        SURGERY_DESCRIPTIONS[
+                            surgeryTemplateSelect.value
+                        ] || "";
+                }
+            });
+        }
+
         doc.getElementById("medical-card-close").onclick = () => panel.remove();
 
         const left = doc.getElementById("mc-left");
@@ -2427,11 +2469,22 @@ async function sendVialsOrders() {
                 const descriptionBox =
                     doc.getElementById("mc-surgery-description");
 
+                const presetName =
+                    doc.getElementById("mc-preset")?.value || "";
+
+                const templateSelect =
+                    doc.getElementById("mc-surgery-template");
+
+                if (templateSelect) {
+                    templateSelect.value =
+                        SURGERY_DESCRIPTIONS[presetName]
+                            ? presetName
+                            : "";
+                }
+
                 if (descriptionBox) {
                     descriptionBox.value =
-                        SURGERY_DESCRIPTIONS[
-                            doc.getElementById("mc-preset")?.value || ""
-                        ] || "";
+                        SURGERY_DESCRIPTIONS[presetName] || "";
                 }
 
                 updateSurgeryPanelFromMedicalCard();
@@ -2764,12 +2817,30 @@ async function sendVialsOrders() {
                 medicalActOption?.textContent?.trim() || "";
         }
 
+        const surgeryTemplateSelect =
+            doc.getElementById("mc-surgery-template");
+
+        /*
+        * Αν υπάρχει πρότυπο με ίδιο όνομα με το preset,
+        * επιλέγεται αυτόματα. Διαφορετικά διατηρείται η
+        * χειροκίνητη επιλογή του χρήστη.
+        */
+        if (
+            surgeryTemplateSelect &&
+            SURGERY_DESCRIPTIONS[presetName]
+        ) {
+            surgeryTemplateSelect.value = presetName;
+        }
+
         /*
         * Συμπλήρωση κειμένου μόνο όταν το πεδίο είναι κενό.
         */
         if (descriptionBox && !descriptionBox.value.trim()) {
+            const templateKey =
+                surgeryTemplateSelect?.value || presetName;
+
             descriptionBox.value =
-                SURGERY_DESCRIPTIONS[presetName] || "";
+                SURGERY_DESCRIPTIONS[templateKey] || "";
         }
 
         /*
