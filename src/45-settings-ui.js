@@ -1,7 +1,7 @@
 /*
  * Asklipios — Settings UI
  *
- * Version 0.10.0
+ * Version 0.11.0
  *
  * Visible local editors for:
  * - Laboratory packages
@@ -484,10 +484,56 @@
             #${PANEL_ID} .ask-live-results {
                 width: 100%;
                 min-height: 145px;
+                max-height: 330px;
+                overflow: auto;
                 margin-top: 7px;
                 border: 1px solid #aab2b7;
                 border-radius: 4px;
                 background: #fff;
+            }
+
+            #${PANEL_ID} .ask-live-results-table {
+                width: 100%;
+                border-collapse: collapse;
+                table-layout: fixed;
+                font-size: 12px;
+            }
+
+            #${PANEL_ID} .ask-live-results-table th,
+            #${PANEL_ID} .ask-live-results-table td {
+                border-bottom: 1px solid #d7dcdf;
+                padding: 7px 8px;
+                text-align: left;
+                vertical-align: middle;
+                overflow-wrap: anywhere;
+            }
+
+            #${PANEL_ID} .ask-live-results-table th {
+                background: #eef2f4;
+                font-weight: bold;
+            }
+
+            #${PANEL_ID} .ask-live-result-row {
+                cursor: pointer;
+                transition: background 120ms ease;
+            }
+
+            #${PANEL_ID} .ask-live-result-row:hover {
+                background: #edf4f8;
+            }
+
+            #${PANEL_ID} .ask-live-result-row.selected {
+                background: #d5f5e3;
+            }
+
+            #${PANEL_ID} .ask-live-result-row.selected:hover {
+                background: #c7eed7;
+            }
+
+            #${PANEL_ID} .ask-live-result-check {
+                width: 18px;
+                height: 18px;
+                cursor: pointer;
             }
 
             @media (max-width: 900px) {
@@ -716,6 +762,7 @@
                     );
 
                     renderExamRows();
+                    renderLiveCatalogResults();
                 };
             });
 
@@ -1204,17 +1251,24 @@
         depSelect.value = String(state.examDep || '');
     }
 
+    function isLiveExamSelected(exam) {
+        const key = uniqueExamKey(exam);
+
+        return (state.packageDraft?.exams || [])
+            .some(item => uniqueExamKey(item) === key);
+    }
+
     function renderLiveCatalogResults() {
         const doc = getDocument();
-        const select = doc?.getElementById('asklipios-live-exam-results');
+        const container = doc?.getElementById('asklipios-live-exam-results');
         const count = doc?.getElementById('asklipios-live-exam-count');
-        if (!select) return;
+        if (!container) return;
 
         const catalogState = A.labCatalog.getState();
 
         if (!catalogState.loaded) {
             state.examResults = [];
-            select.innerHTML = '<option value="">Ο κατάλογος δεν έχει φορτωθεί.</option>';
+            container.innerHTML = '<div class="ask-muted" style="padding:14px;">Ο κατάλογος δεν έχει φορτωθεί.</div>';
             if (count) count.textContent = '';
             return;
         }
@@ -1223,7 +1277,7 @@
 
         if (!query && !state.examLab && !state.examDep) {
             state.examResults = [];
-            select.innerHTML = '<option value="">Γράψε όνομα εξέτασης ή επίλεξε φίλτρο.</option>';
+            container.innerHTML = '<div class="ask-muted" style="padding:14px;">Γράψε όνομα εξέτασης ή επίλεξε φίλτρο.</div>';
             if (count) count.textContent = `${catalogState.count} διαθέσιμες εξετάσεις`;
             return;
         }
@@ -1238,24 +1292,67 @@
         );
 
         if (!state.examResults.length) {
-            select.innerHTML = '<option value="">Δεν βρέθηκαν εξετάσεις.</option>';
+            container.innerHTML = '<div class="ask-muted" style="padding:14px;">Δεν βρέθηκαν εξετάσεις.</div>';
             if (count) count.textContent = '0 αποτελέσματα';
             return;
         }
 
-        select.innerHTML = state.examResults.map((exam, index) => {
-            const label = exam.abbr && exam.abbr !== exam.testDescr
-                ? `${exam.abbr} — ${exam.testDescr}`
-                : exam.testDescr || exam.abbr;
+        container.innerHTML = `
+            <table class="ask-live-results-table">
+                <colgroup>
+                    <col style="width:46px;">
+                    <col style="width:38%;">
+                    <col style="width:25%;">
+                    <col>
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th style="text-align:center;">✓</th>
+                        <th>Εξέταση</th>
+                        <th>Εργαστήριο</th>
+                        <th>Τμήμα</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${state.examResults.map((exam, index) => {
+                        const selected = isLiveExamSelected(exam);
+                        return `
+                            <tr
+                                class="ask-live-result-row ${selected ? 'selected' : ''}"
+                                data-index="${index}"
+                                title="Διπλό κλικ για επιλογή ή αποεπιλογή"
+                            >
+                                <td style="text-align:center;">
+                                    <input
+                                        type="checkbox"
+                                        class="ask-live-result-check"
+                                        data-index="${index}"
+                                        ${selected ? 'checked' : ''}
+                                        aria-label="Επιλογή εξέτασης"
+                                    >
+                                </td>
+                                <td>${escapeHtml(exam.testDescr || exam.abbr || '')}</td>
+                                <td>${escapeHtml(exam.labDescr || '')}</td>
+                                <td>${escapeHtml(exam.depDescr || '')}</td>
+                            </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            </table>
+        `;
 
-            return `
-                <option value="${index}">
-                    ${escapeHtml(label)} · ${escapeHtml(exam.labDescr)} / ${escapeHtml(exam.depDescr)}
-                </option>
-            `;
-        }).join('');
+        container.querySelectorAll('.ask-live-result-check').forEach(input => {
+            input.onchange = () => {
+                toggleLiveExam(Number(input.dataset.index), input.checked);
+            };
+        });
 
-        select.selectedIndex = 0;
+        container.querySelectorAll('.ask-live-result-row').forEach(row => {
+            row.ondblclick = event => {
+                if (event.target.closest('input, button, a')) return;
+                toggleLiveExam(Number(row.dataset.index));
+            };
+        });
 
         if (count) {
             count.textContent = `${state.examResults.length} αποτελέσματα`;
@@ -1298,14 +1395,10 @@
         }
     }
 
-    function addSelectedLiveExam() {
-        const doc = getDocument();
-        const select = doc?.getElementById('asklipios-live-exam-results');
-        const index = Number(select?.value);
-
+    function toggleLiveExam(index, forceSelected = null) {
         if (!Number.isInteger(index) || !state.examResults[index]) {
             setLiveCatalogStatus(
-                'Επίλεξε πρώτα μία εξέταση από τα αποτελέσματα.',
+                'Δεν βρέθηκε η συγκεκριμένη εξέταση.',
                 'warning'
             );
             return;
@@ -1315,24 +1408,29 @@
 
         const exam = clone(state.examResults[index]);
         const key = uniqueExamKey(exam);
-        const alreadyExists = (state.packageDraft?.exams || [])
-            .some(item => uniqueExamKey(item) === key);
+        const currentIndex = (state.packageDraft?.exams || [])
+            .findIndex(item => uniqueExamKey(item) === key);
+        const isSelected = currentIndex >= 0;
+        const shouldSelect = forceSelected === null
+            ? !isSelected
+            : Boolean(forceSelected);
 
-        if (alreadyExists) {
+        if (shouldSelect && !isSelected) {
+            state.packageDraft.exams.push(exam);
             setLiveCatalogStatus(
-                'Η εξέταση υπάρχει ήδη στο πακέτο.',
-                'warning'
+                `Προστέθηκε: ${exam.testDescr || exam.abbr}`,
+                'success'
             );
-            return;
+        } else if (!shouldSelect && isSelected) {
+            state.packageDraft.exams.splice(currentIndex, 1);
+            setLiveCatalogStatus(
+                `Αφαιρέθηκε: ${exam.testDescr || exam.abbr}`,
+                'info'
+            );
         }
 
-        state.packageDraft.exams.push(exam);
         renderExamRows();
-
-        setLiveCatalogStatus(
-            `Προστέθηκε: ${exam.abbr || exam.testDescr}`,
-            'success'
-        );
+        renderLiveCatalogResults();
     }
 
     function renderPackageEditor() {
@@ -1450,7 +1548,7 @@
                     </button>
                 </div>
 
-                <div class="ask-live-catalog-grid" style="margin-top:7px;">
+                <div class="ask-live-catalog-grid" style="margin-top:7px;grid-template-columns:minmax(180px,1fr) 210px 250px;">
                     <div>
                         <label class="ask-muted">Όνομα ή συντομογραφία</label>
                         <input
@@ -1480,23 +1578,14 @@
                             <option value="">Όλα τα τμήματα</option>
                         </select>
                     </div>
-
-                    <button
-                        type="button"
-                        id="asklipios-add-live-exam"
-                        class="ask-btn ask-btn-primary"
-                    >
-                        + Προσθήκη
-                    </button>
                 </div>
 
-                <select
+                <div
                     id="asklipios-live-exam-results"
                     class="ask-live-results"
-                    size="7"
                 >
-                    <option value="">Φόρτωση καταλόγου…</option>
-                </select>
+                    <div class="ask-muted" style="padding:14px;">Φόρτωση καταλόγου…</div>
+                </div>
 
                 <div style="display:flex;justify-content:space-between;gap:8px;margin-top:5px;">
                     <span
@@ -1548,13 +1637,6 @@
             renderLiveCatalogResults();
         };
 
-        searchInput.onkeydown = event => {
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                addSelectedLiveExam();
-            }
-        };
-
         doc.getElementById('asklipios-exam-lab-filter').onchange = event => {
             state.examLab = event.target.value;
             state.examDep = '';
@@ -1566,12 +1648,6 @@
             state.examDep = event.target.value;
             renderLiveCatalogResults();
         };
-
-        doc.getElementById('asklipios-add-live-exam').onclick =
-            addSelectedLiveExam;
-
-        doc.getElementById('asklipios-live-exam-results').ondblclick =
-            addSelectedLiveExam;
 
         doc.getElementById('asklipios-refresh-live-catalog').onclick = () => {
             loadLiveCatalog(true);
@@ -2488,6 +2564,8 @@
             renderPlaceholderTab('presets');
         } else if (state.activeTab === 'surgery') {
             renderPlaceholderTab('surgery');
+        } else if (state.activeTab === 'doctors') {
+            renderPlaceholderTab('doctors');
         }
     }
 
@@ -2568,6 +2646,14 @@
                     <button
                         type="button"
                         class="ask-tab"
+                        data-tab="doctors"
+                    >
+                        Θεράποντες Ιατροί
+                    </button>
+
+                    <button
+                        type="button"
+                        class="ask-tab"
                         data-tab="backup"
                     >
                         Backup
@@ -2583,9 +2669,7 @@
                     id="asklipios-settings-status"
                     class="ask-status"
                     style="margin:0 12px 10px;"
-                >
-                    Έτοιμο.
-                </div>
+                ></div>
             </div>
         `;
 
@@ -2609,7 +2693,7 @@
                     button.dataset.tab;
 
                 renderActiveTab();
-                setStatus('Έτοιμο.');
+                setStatus('');
             };
         });
 
@@ -2727,7 +2811,7 @@
 
     A.modules.settingsUi = {
         loaded: true,
-        version: '0.10.0'
+        version: '0.11.0'
     };
 
     startGearWatcher();
