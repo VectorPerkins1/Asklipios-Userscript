@@ -1,7 +1,7 @@
 /*
  * Asklipios — Settings UI
  *
- * Version 0.11.0
+ * Version 0.12.0
  *
  * Visible local editors for:
  * - Laboratory packages
@@ -2566,6 +2566,8 @@
             renderPlaceholderTab('surgery');
         } else if (state.activeTab === 'doctors') {
             renderPlaceholderTab('doctors');
+        } else if (state.activeTab === 'anticoagulations') {
+            renderPlaceholderTab('anticoagulations');
         }
     }
 
@@ -2649,6 +2651,14 @@
                         data-tab="doctors"
                     >
                         Θεράποντες Ιατροί
+                    </button>
+
+                    <button
+                        type="button"
+                        class="ask-tab"
+                        data-tab="anticoagulations"
+                    >
+                        Αντιπηκτικές
                     </button>
 
                     <button
