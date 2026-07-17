@@ -1,7 +1,7 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.10.0
+ * Version 0.11.0
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
@@ -78,7 +78,7 @@
     A.modules = A.modules || {};
     A.modules.legacyApp = {
         loaded: true,
-        version: '0.10.0'
+        version: '0.11.0'
     };
 
 
@@ -1874,6 +1874,61 @@ async function sendVialsOrders() {
         return `${d}/${m}/${y}`;
     }
 
+    function getDoctorFollowupTemplate(doctorName) {
+        const entry = DOCTOR_FOLLOWUP_TEXTS[doctorName] || null;
+        if (!entry) return '';
+
+        if (typeof entry.template === 'string') {
+            return entry.template;
+        }
+
+        const time = String(entry.time || '').trim();
+        const doctorLabel = String(entry.doctorLabel || '').trim();
+        const suffix = [
+            time ? `και ώρα ${time}` : '',
+            doctorLabel ? `(${doctorLabel})` : ''
+        ].filter(Boolean).join(' ');
+
+        return [
+            'Επανεξέταση στα Τακτικά Εξωτερικά Ιατρεία της Ορθοπαιδικής Κλινικής',
+            'στις {{ημερομηνία}}',
+            suffix
+        ].filter(Boolean).join(' ') + '.';
+    }
+
+    function renderDoctorFollowupText(doctorName, followupDate) {
+        const dateText = formatGreekDate(followupDate);
+        const template = getDoctorFollowupTemplate(doctorName);
+
+        if (!template) {
+            if (dateText) {
+                return `Επανεξέταση στα Τακτικά Εξωτερικά Ιατρεία της Ορθοπαιδικής Κλινικής στις ${dateText}.`;
+            }
+
+            return doctorName
+                ? (DEFAULT_DISCHARGE_TEXT || '')
+                : '';
+        }
+
+        let result = String(template);
+
+        if (dateText) {
+            result = result.replaceAll('{{ημερομηνία}}', dateText);
+        } else {
+            result = result
+                .replace(/\s+(στις|την|τη)\s*\{\{ημερομηνία\}\}/giu, '')
+                .replaceAll('{{ημερομηνία}}', '');
+        }
+
+        result = result
+            .replaceAll('{{θεράπων}}', doctorName || '')
+            .replace(/\s+([,.;:])/g, '$1')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+
+        return result;
+    }
+
     function updateDischargeInstructions() {
         const doc = getNursingFrame().document;
 
@@ -1887,32 +1942,10 @@ async function sendVialsOrders() {
 
         const presetText = PRESET_DISCHARGE_TEXTS[preset] || "";
         const anticoagulationText = ANTICOAGULATION_TEXTS[anticoagulation] || "";
-
-        let followupText = "";
-
-        if (doctorName) {
-            const doctorFollowup =
-                DOCTOR_FOLLOWUP_TEXTS[doctorName] || null;
-
-            const dateText = formatGreekDate(followupDate);
-
-            if (doctorFollowup && dateText) {
-                followupText =
-                    `Επανεξέταση στα Τακτικά Εξωτερικά Ιατρεία της Ορθοπαιδικής Κλινικής στις ${dateText} και ώρα ${doctorFollowup.time} (${doctorFollowup.doctorLabel}).`;
-            } else if (doctorFollowup) {
-                followupText =
-                    `Επανεξέταση στα Τακτικά Εξωτερικά Ιατρεία της Ορθοπαιδικής Κλινικής και ώρα ${doctorFollowup.time} (${doctorFollowup.doctorLabel}).`;
-            } else if (dateText) {
-                followupText =
-                    `Επανεξέταση στα Τακτικά Εξωτερικά Ιατρεία της Ορθοπαιδικής Κλινικής στις ${dateText}.`;
-            } else {
-                followupText =
-                    DEFAULT_DISCHARGE_TEXT || "";
-            }
-        } else if (followupDate) {
-            followupText =
-                `Επανεξέταση στα Τακτικά Εξωτερικά Ιατρεία της Ορθοπαιδικής Κλινικής στις ${formatGreekDate(followupDate)}.`;
-        }
+        const followupText = renderDoctorFollowupText(
+            doctorName,
+            followupDate
+        );
 
         box.value = [
             presetText,
@@ -3722,6 +3755,25 @@ async function validateMedicalAct(
 
     return res.json();
 }
+
+    A.runtime = A.runtime || {};
+    A.runtime.getSelectedPatientsFull = () =>
+        selectedPatientsFull().map(patient => ({ ...patient }));
+    A.runtime.getDoctors = () =>
+        DOCTORS.map(doctor => ({ ...doctor }));
+    A.runtime.getWardNumber = () => "57";
+    A.runtime.updateDischargeInstructions = updateDischargeInstructions;
+
+    window.addEventListener('asklipios:data-changed', () => {
+        try {
+            const doc = getNursingFrame()?.document;
+            if (doc?.getElementById('mc-discharge-instructions')) {
+                updateDischargeInstructions();
+            }
+        } catch {
+            // The medical-card panel may be closed.
+        }
+    });
 
     setTimeout(createPanel, 4000);
 })();
