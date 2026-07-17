@@ -1,6 +1,6 @@
 /*
  * Asklipios — Daily Ward Overview
- * Version 0.13.0
+ * Version 0.13.1
  *
  * All-patient ward board with live Care data, persistent per-patient notes,
  * automatic 48-hour cleanup after a patient disappears from the ward plan,
@@ -19,10 +19,11 @@
 
     A.modules = A.modules || {};
 
-    const VERSION = '0.13.0';
+    const VERSION = '0.13.1';
     const OVERLAY_ID = 'asklipios-daily-overview';
     const STYLE_ID = 'asklipios-daily-overview-style';
-    const STORAGE_KEY = 'asklipios.daily-overview.patient-data.v2';
+    const STORAGE_KEY = 'asklipios.daily-overview.patient-data.v3';
+    const PREVIOUS_STORAGE_KEY = 'asklipios.daily-overview.patient-data.v2';
     const LEGACY_STORAGE_PREFIX = 'asklipios.daily-overview.v1';
     const MISSING_PATIENT_TTL_MS = 48 * 60 * 60 * 1000;
     const REFRESH_DELAY_MS = 110;
@@ -56,6 +57,23 @@
     ];
 
     const TRANSFUSION_TYPES = ['ΜΣΕ', 'FFP', 'PLTs'];
+
+    const PENDING_OPTIONS = [
+        'Εργαστηριακός έλεγχος',
+        'Επανέλεγχος Hb',
+        'Έλεγχος INR',
+        'Ακτινογραφικός έλεγχος',
+        'Αναισθησιολογική εκτίμηση',
+        'Καρδιολογική εκτίμηση',
+        'Φυσικοθεραπεία',
+        'Κινητοποίηση',
+        'Αφαίρεση παροχέτευσης',
+        'Αφαίρεση ραμμάτων',
+        'Συγκατάθεση ασθενούς',
+        'Ενημέρωση συγγενών',
+        'Ρύθμιση αντιπηκτικής αγωγής',
+        'Προεγχειρητικός έλεγχος'
+    ];
 
     function clone(value) {
         if (typeof structuredClone === 'function') return structuredClone(value);
@@ -156,9 +174,14 @@
 
     function readStorage() {
         try {
-            const raw = typeof GM_getValue === 'function'
-                ? GM_getValue(STORAGE_KEY, null)
-                : window.localStorage.getItem(STORAGE_KEY);
+            let raw;
+            if (typeof GM_getValue === 'function') {
+                raw = GM_getValue(STORAGE_KEY, null);
+                if (!raw) raw = GM_getValue(PREVIOUS_STORAGE_KEY, null);
+            } else {
+                raw = window.localStorage.getItem(STORAGE_KEY)
+                    || window.localStorage.getItem(PREVIOUS_STORAGE_KEY);
+            }
             if (!raw) return null;
             return typeof raw === 'string' ? JSON.parse(raw) : raw;
         } catch (error) {
@@ -181,7 +204,7 @@
 
     function createState() {
         return {
-            schemaVersion: 2,
+            schemaVersion: 3,
             updatedAt: null,
             patients: {},
             dailyNotes: {}
@@ -259,8 +282,12 @@
     function normalizeState(raw) {
         const result = createState();
         if (!raw || typeof raw !== 'object') return result;
+        const dropLegacyLabs = Number(raw.schemaVersion || 0) < 3;
         Object.entries(raw.patients || {}).forEach(([key, value]) => {
-            const patient = normalizePatientData(value);
+            const patient = normalizePatientData({
+                ...value,
+                labs: dropLegacyLabs ? {} : value?.labs
+            });
             patient.encounterNr = patient.encounterNr || String(key);
             result.patients[String(key)] = patient;
         });
@@ -307,15 +334,75 @@
         writeStorage(state);
     }
 
+    function parsePlanLabel(value) {
+        let label = String(value || '').replace(/\s+/g, ' ').trim();
+        let doctor = '';
+        const doctorMatch = label.match(/\(([^()]+)\)\s*$/);
+        if (doctorMatch) {
+            doctor = String(doctorMatch[1] || '').trim();
+            label = label.slice(0, doctorMatch.index).trim();
+        }
+        return { label, doctor };
+    }
+
+    function planRowForEncounter(encounterNr) {
+        const doc = getDocument();
+        return doc?.getElementById(`tdMiniColorBars${encounterNr}`)?.closest('tr') || null;
+    }
+
+    function planMetadata(encounterNr) {
+        const row = planRowForEncounter(encounterNr);
+        if (!row) return {};
+
+        const cells = [...row.querySelectorAll('td')];
+        const ageCell = cells.find(cell => /\b\d{1,3}\s*ετών\b/i.test(cell.textContent || ''));
+        const ageMatch = String(ageCell?.textContent || '').match(/\b(\d{1,3})\s*ετών\b/i);
+        const admissionDate = normalizeDate(ageCell?.previousElementSibling?.textContent || '');
+
+        const titled = [...row.querySelectorAll('[title]')]
+            .map(element => ({
+                element,
+                title: normalizeText(element.getAttribute('title') || ''),
+                text: String(element.textContent || '').replace(/\s+/g, ' ').trim()
+            }))
+            .filter(item => item.text);
+
+        const diagnosisCandidates = titled.filter(item =>
+            item.title.includes('ΔΙΑΓΝΩΣ') && !item.title.includes('ΑΝΑΖΗΤ')
+        );
+        const admissionCandidates = titled.filter(item =>
+            item.title.includes('ΑΙΤΙΑ ΕΙΣΑΓΩΓΗΣ')
+            || item.title.includes('ΔΙΑΓΝΩΣΗ ΕΙΣΑΓΩΓΗΣ')
+        );
+
+        const diagnosis = diagnosisCandidates.at(-1) || null;
+        const admission = admissionCandidates.at(-1) || null;
+        const incidentSource = diagnosis || admission;
+        const parsedIncident = parsePlanLabel(incidentSource?.text || '');
+        const parsedAdmission = parsePlanLabel(admission?.text || '');
+
+        return {
+            age: ageMatch?.[1] || '',
+            admissionDate,
+            incident: parsedIncident.label,
+            doctor: parsedIncident.doctor || parsedAdmission.doctor
+        };
+    }
+
     function currentPatients() {
         return (A.runtime.getAllPatients?.() || [])
-            .map(patient => ({
-                ...patient,
-                encounterNr: String(patient.encounterNr || ''),
-                room: String(patient.room || ''),
-                bed: String(patient.bed || ''),
-                name: String(patient.name || patient.patientName || '')
-            }))
+            .map(patient => {
+                const encounterNr = String(patient.encounterNr || '');
+                const meta = planMetadata(encounterNr);
+                return {
+                    ...patient,
+                    ...meta,
+                    encounterNr,
+                    room: String(patient.room || ''),
+                    bed: String(patient.bed || ''),
+                    name: String(patient.name || patient.patientName || '')
+                };
+            })
             .filter(patient => patient.encounterNr);
     }
 
@@ -351,6 +438,10 @@
                 room: patient.room || existing.room || '',
                 bed: patient.bed || existing.bed || '',
                 name: patient.name || existing.name || '',
+                age: patient.age || existing.age || '',
+                admissionDate: patient.admissionDate || existing.admissionDate || '',
+                incident: patient.incident || existing.incident || '',
+                doctor: patient.doctor || existing.doctor || '',
                 lastSeenAt: seenAt
             });
         });
@@ -389,7 +480,7 @@
             #${OVERLAY_ID} .do-patient-row{border-bottom:1px solid #dce3ea;align-items:stretch;background:#fff}
             #${OVERLAY_ID} .do-patient-row:nth-child(odd){background:#fbfcfe}
             #${OVERLAY_ID} .do-patient-row:last-child{border-bottom:0}
-            #${OVERLAY_ID} .do-cell{padding:8px;border-right:1px solid #e2e8ef;min-width:0;font-size:12px;line-height:1.28}
+            #${OVERLAY_ID} .do-cell{padding:8px;border-right:1px solid #e2e8ef;min-width:0;font-size:12px;line-height:1.28;position:relative}
             #${OVERLAY_ID} .do-patient-name{font-weight:700;color:#154f92;margin-top:3px;word-break:break-word}
             #${OVERLAY_ID} .do-bed{font-size:17px;font-weight:700;color:#0a58ad}
             #${OVERLAY_ID} .do-age{font-weight:700}
@@ -399,28 +490,24 @@
             #${OVERLAY_ID} .do-lab-chip{border:1px solid #d5dee7;border-radius:4px;background:#f8fafc;padding:3px 5px;white-space:nowrap;font-size:10px}
             #${OVERLAY_ID} .do-empty{color:#9aa6b2;font-size:11px}
             #${OVERLAY_ID} select,#${OVERLAY_ID} input,#${OVERLAY_ID} textarea{font:inherit;border:1px solid #b9c6d3;border-radius:4px;background:#fff;padding:5px 6px;max-width:100%}
-            #${OVERLAY_ID} .do-compact-select{width:100%;margin-bottom:5px}
             #${OVERLAY_ID} .do-inline{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
-            #${OVERLAY_ID} .do-inline select,#${OVERLAY_ID} .do-inline input{min-width:0}
-            #${OVERLAY_ID} .do-chip-list{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:5px}
-            #${OVERLAY_ID} .do-comorb-chip{background:#edf4fd;border:1px solid #c8daf1;color:#245b9b;border-radius:13px;padding:3px 6px;font-size:10px}
-            #${OVERLAY_ID} details.do-comorb-menu{position:relative}
-            #${OVERLAY_ID} details.do-comorb-menu>summary{list-style:none;cursor:pointer;border:1px dashed #8caed2;border-radius:4px;padding:4px 6px;color:#245b9b;font-size:10px;width:max-content}
-            #${OVERLAY_ID} details.do-comorb-menu>summary::-webkit-details-marker{display:none}
-            #${OVERLAY_ID} .do-comorb-options{position:absolute;left:0;top:28px;z-index:25;width:260px;max-height:270px;overflow:auto;background:#fff;border:1px solid #aebdcc;border-radius:6px;box-shadow:0 5px 18px rgba(0,0,0,.18);padding:7px;display:grid;gap:4px}
-            #${OVERLAY_ID} .do-comorb-options label{display:flex;align-items:flex-start;gap:6px;font-size:11px;padding:3px;border-radius:3px}
-            #${OVERLAY_ID} .do-comorb-options label:hover{background:#eef5fb}
-            #${OVERLAY_ID} .do-comorb-options input{width:auto;margin-top:1px}
+            #${OVERLAY_ID} .do-entry-list{display:flex;flex-wrap:wrap;gap:4px;align-items:flex-start}
+            #${OVERLAY_ID} .do-entry-chip{display:inline-flex;align-items:center;gap:4px;background:#edf4fd;border:1px solid #c8daf1;color:#245b9b;border-radius:13px;padding:3px 6px;font-size:10px;max-width:100%}
+            #${OVERLAY_ID} .do-entry-chip span{overflow-wrap:anywhere}
+            #${OVERLAY_ID} .do-chip-remove{border:0;background:transparent;color:#6f7f90;padding:0 1px;font-size:12px;line-height:1}
+            #${OVERLAY_ID} details.do-add-menu{margin-top:5px}
+            #${OVERLAY_ID} details.do-add-menu>summary{list-style:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid #8caed2;border-radius:5px;color:#1769c2;background:#fff;font-size:16px;font-weight:700}
+            #${OVERLAY_ID} details.do-add-menu>summary::-webkit-details-marker{display:none}
+            #${OVERLAY_ID} .do-add-panel{margin-top:5px;padding:7px;border:1px solid #bdcbd9;border-radius:6px;background:#f8fbff;display:grid;gap:6px}
+            #${OVERLAY_ID} .do-add-panel select,#${OVERLAY_ID} .do-add-panel input{width:100%}
+            #${OVERLAY_ID} .do-add-panel .do-primary{padding:5px 8px;font-size:11px;justify-self:end}
             #${OVERLAY_ID} .do-mini-list{display:grid;gap:4px}
-            #${OVERLAY_ID} .do-transfusion-item{display:grid;grid-template-columns:84px 53px auto;gap:4px;align-items:center}
-            #${OVERLAY_ID} .do-new-transfusion{display:grid;grid-template-columns:86px 58px auto;gap:4px;margin-top:5px}
             #${OVERLAY_ID} .do-icon-button{border:1px solid #aebdca;background:#fff;border-radius:4px;padding:4px 6px;color:#34495e}
             #${OVERLAY_ID} .do-pending-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}
             #${OVERLAY_ID} .do-pending-item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px;align-items:start}
             #${OVERLAY_ID} .do-pending-item input[type=checkbox]{width:auto;margin-top:5px}
-            #${OVERLAY_ID} .do-pending-text{width:100%;padding:4px 5px}
-            #${OVERLAY_ID} .do-pending-item.done .do-pending-text{text-decoration:line-through;color:#75808b;background:#f1f3f5}
-            #${OVERLAY_ID} .do-add-pending-box{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px;margin-top:5px}
+            #${OVERLAY_ID} .do-pending-label{padding:4px 2px;overflow-wrap:anywhere}
+            #${OVERLAY_ID} .do-pending-item.done .do-pending-label{text-decoration:line-through;color:#75808b}
             #${OVERLAY_ID} .do-sidebar{border-left:1px solid #d2dbe5;background:#f0f4f8;padding:12px;overflow:auto;display:grid;align-content:start;gap:10px}
             #${OVERLAY_ID} .do-stat{background:#fff;border:1px solid #d4dde7;border-radius:8px;padding:12px;text-align:center}
             #${OVERLAY_ID} .do-stat strong{display:block;font-size:25px;color:#1769c2;margin-top:5px}
@@ -443,43 +530,74 @@
             .map(target => `<span class="do-lab-chip"><b>${target.key}</b> ${escapeHtml(labs[target.key])}</span>`);
         return values.length
             ? `<div class="do-lab-grid">${values.join('')}</div>`
-            : '<span class="do-empty">Δεν βρέθηκαν τιμές</span>';
+            : '<span class="do-empty">—</span>';
+    }
+
+    function anticoagulationHtml(data) {
+        const selected = anticoagulationEntries().find(entry => entry.key === data.anticoagulationKey);
+        const summary = selected
+            ? `<div class="do-entry-list"><span class="do-entry-chip"><span>${escapeHtml([
+                selected.title,
+                data.anticoagulationTiming,
+                data.anticoagulationStoppedDate ? `διακοπή ${formatGreekDate(data.anticoagulationStoppedDate)}` : ''
+            ].filter(Boolean).join(' · '))}</span><button type="button" class="do-chip-remove do-clear-anticoag" title="Αφαίρεση">×</button></span></div>`
+            : '<span class="do-empty">Καμία</span>';
+        return `
+            ${summary}
+            <details class="do-add-menu do-anticoag-menu">
+                <summary title="Προσθήκη αντιπηκτικής">＋</summary>
+                <div class="do-add-panel">
+                    <select class="do-new-anticoag">
+                        <option value="">-- Επιλογή αγωγής --</option>
+                        ${anticoagulationOptions(data.anticoagulationKey)}
+                    </select>
+                    <select class="do-new-anticoag-timing">
+                        <option value="">-- Πρωί / Βράδυ --</option>
+                        <option value="Πρωί" ${data.anticoagulationTiming === 'Πρωί' ? 'selected' : ''}>Πρωί</option>
+                        <option value="Βράδυ" ${data.anticoagulationTiming === 'Βράδυ' ? 'selected' : ''}>Βράδυ</option>
+                    </select>
+                    <label class="do-muted">Ημερομηνία διακοπής<input type="date" class="do-new-anticoag-stop" value="${escapeHtml(data.anticoagulationStoppedDate || '')}"></label>
+                    <button type="button" class="do-primary do-add-anticoag">Προσθήκη</button>
+                </div>
+            </details>
+        `;
     }
 
     function comorbidityHtml(data) {
         const selected = normalizeComorbidities(data.comorbidities);
         const chips = selected.length
-            ? selected.map(item => `<span class="do-comorb-chip">${escapeHtml(item)}</span>`).join('')
-            : '<span class="do-empty">Καμία επιλεγμένη</span>';
-        const options = COMORBIDITY_OPTIONS.map(option => `
-            <label><input type="checkbox" class="do-comorb-check" value="${escapeHtml(option)}" ${selected.includes(option) ? 'checked' : ''}> <span>${escapeHtml(option)}</span></label>
-        `).join('');
+            ? selected.map((item, index) => `<span class="do-entry-chip"><span>${escapeHtml(item)}</span><button type="button" class="do-chip-remove do-remove-comorbidity" data-index="${index}" title="Αφαίρεση">×</button></span>`).join('')
+            : '<span class="do-empty">Καμία</span>';
+        const available = COMORBIDITY_OPTIONS.filter(option => !selected.includes(option));
         return `
-            <div class="do-chip-list">${chips}</div>
-            <details class="do-comorb-menu">
-                <summary>+ Επιλογή</summary>
-                <div class="do-comorb-options">${options}</div>
+            <div class="do-entry-list">${chips}</div>
+            <details class="do-add-menu do-comorb-menu">
+                <summary title="Προσθήκη συννοσηρότητας">＋</summary>
+                <div class="do-add-panel">
+                    <select class="do-new-comorbidity">
+                        <option value="">-- Επιλογή συννοσηρότητας --</option>
+                        ${available.map(option => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join('')}
+                    </select>
+                    <button type="button" class="do-primary do-add-comorbidity">Προσθήκη</button>
+                </div>
             </details>
         `;
     }
 
     function transfusionHtml(data) {
-        const rows = (data.transfusions || []).map((item, index) => `
-            <div class="do-transfusion-item" data-index="${index}">
-                <input type="date" class="do-transfusion-date" value="${escapeHtml(item.date || '')}">
-                <select class="do-transfusion-type">
-                    ${TRANSFUSION_TYPES.map(type => `<option value="${type}" ${item.type === type ? 'selected' : ''}>${type}</option>`).join('')}
-                </select>
-                <button type="button" class="do-icon-button do-remove-transfusion" title="Αφαίρεση">✕</button>
-            </div>
-        `).join('');
+        const chips = (data.transfusions || []).length
+            ? data.transfusions.map((item, index) => `<span class="do-entry-chip"><span>${escapeHtml(`${formatGreekDate(item.date)} · ${item.type}`)}</span><button type="button" class="do-chip-remove do-remove-transfusion" data-index="${index}" title="Αφαίρεση">×</button></span>`).join('')
+            : '<span class="do-empty">Καμία</span>';
         return `
-            <div class="do-mini-list do-transfusion-list">${rows || '<span class="do-empty">Καμία</span>'}</div>
-            <div class="do-new-transfusion">
-                <input type="date" class="do-new-transfusion-date" value="${todayIso()}">
-                <select class="do-new-transfusion-type">${TRANSFUSION_TYPES.map(type => `<option value="${type}">${type}</option>`).join('')}</select>
-                <button type="button" class="do-icon-button do-add-transfusion">+</button>
-            </div>
+            <div class="do-entry-list">${chips}</div>
+            <details class="do-add-menu do-transfusion-menu">
+                <summary title="Προσθήκη μετάγγισης">＋</summary>
+                <div class="do-add-panel">
+                    <input type="date" class="do-new-transfusion-date" value="${todayIso()}">
+                    <select class="do-new-transfusion-type">${TRANSFUSION_TYPES.map(type => `<option value="${type}">${type}</option>`).join('')}</select>
+                    <button type="button" class="do-primary do-add-transfusion">Προσθήκη</button>
+                </div>
+            </details>
         `;
     }
 
@@ -487,17 +605,24 @@
         const rows = (data.pending || []).map((item, index) => `
             <div class="do-pending-item ${item.done ? 'done' : ''}" data-index="${index}">
                 <input type="checkbox" class="do-pending-done" ${item.done ? 'checked' : ''}>
-                <input type="text" class="do-pending-text" value="${escapeHtml(item.text || '')}">
+                <div class="do-pending-label">${escapeHtml(item.text || '')}</div>
                 <button type="button" class="do-icon-button do-remove-pending" title="Αφαίρεση">✕</button>
             </div>
         `).join('');
         return `
-            <div class="do-pending-head"><span class="do-muted">${(data.pending || []).filter(item => !item.done).length} ανοικτές</span><button type="button" class="do-icon-button do-show-add-pending" title="Νέα εκκρεμότητα">＋</button></div>
+            <div class="do-pending-head"><span class="do-muted">${(data.pending || []).filter(item => !item.done).length} ανοικτές</span></div>
             <div class="do-mini-list do-pending-list">${rows || '<span class="do-empty">Καμία</span>'}</div>
-            <div class="do-add-pending-box" hidden>
-                <input class="do-new-pending" placeholder="Γράψε εκκρεμότητα">
-                <button type="button" class="do-icon-button do-add-pending">Προσθήκη</button>
-            </div>
+            <details class="do-add-menu do-pending-menu">
+                <summary title="Προσθήκη εκκρεμότητας">＋</summary>
+                <div class="do-add-panel">
+                    <select class="do-new-pending-select">
+                        <option value="">-- Επιλογή εκκρεμότητας --</option>
+                        ${PENDING_OPTIONS.map(option => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join('')}
+                    </select>
+                    <input class="do-new-pending-text" placeholder="Ή γράψε ελεύθερο κείμενο">
+                    <button type="button" class="do-primary do-add-pending">Προσθήκη</button>
+                </div>
+            </details>
         `;
     }
 
@@ -517,29 +642,16 @@
                 </div>
                 <div class="do-cell">
                     <div class="do-age">${data.age ? `${escapeHtml(data.age)} ετών` : '—'}</div>
-                    ${postop ? `<div class="do-postop">${escapeHtml(postop)}</div>` : ''}
-                    ${data.surgeryDate ? `<div class="do-muted" style="margin-top:4px;">Χ/Ο ${escapeHtml(formatGreekDate(data.surgeryDate))}</div>` : ''}
                 </div>
                 <div class="do-cell">
                     <div>${escapeHtml(data.incident || '—')}</div>
+                    ${postop ? `<div class="do-postop">${escapeHtml(postop)}</div>` : ''}
+                    ${data.surgeryDate ? `<div class="do-muted" style="margin-top:4px;">Χ/Ο ${escapeHtml(formatGreekDate(data.surgeryDate))}</div>` : ''}
                     <div class="do-muted" style="margin-top:5px;">${escapeHtml(admissionMeta || 'Δεν βρέθηκε εισαγωγή')}</div>
                 </div>
                 <div class="do-cell">${escapeHtml(data.doctor || '—')}</div>
                 <div class="do-cell">${labsHtml(data.labs)}</div>
-                <div class="do-cell">
-                    <select class="do-compact-select" data-field="anticoagulationKey">
-                        <option value="">-- Καμία / επιλογή --</option>
-                        ${anticoagulationOptions(data.anticoagulationKey)}
-                    </select>
-                    <div class="do-inline">
-                        <select data-field="anticoagulationTiming" title="Χρόνος λήψης">
-                            <option value="">-- Πρωί/Βράδυ --</option>
-                            <option value="Πρωί" ${data.anticoagulationTiming === 'Πρωί' ? 'selected' : ''}>Πρωί</option>
-                            <option value="Βράδυ" ${data.anticoagulationTiming === 'Βράδυ' ? 'selected' : ''}>Βράδυ</option>
-                        </select>
-                        <input type="date" data-field="anticoagulationStoppedDate" value="${escapeHtml(data.anticoagulationStoppedDate)}" title="Ημερομηνία διακοπής">
-                    </div>
-                </div>
+                <div class="do-cell">${anticoagulationHtml(data)}</div>
                 <div class="do-cell">${comorbidityHtml(data)}</div>
                 <div class="do-cell">${transfusionHtml(data)}</div>
                 <div class="do-cell">${pendingHtml(data)}</div>
@@ -570,63 +682,62 @@
         const data = getPatientDataFromRow(row);
         if (!data) return;
 
-        row.querySelectorAll('[data-field]').forEach(input => {
-            const update = () => {
-                data[input.dataset.field] = input.value;
-                saveState();
-            };
-            input.addEventListener('input', update);
-            input.addEventListener('change', update);
+        row.querySelector('.do-add-anticoag')?.addEventListener('click', () => {
+            const key = row.querySelector('.do-new-anticoag')?.value || '';
+            if (!key) return;
+            data.anticoagulationKey = key;
+            data.anticoagulationTiming = row.querySelector('.do-new-anticoag-timing')?.value || '';
+            data.anticoagulationStoppedDate = row.querySelector('.do-new-anticoag-stop')?.value || '';
+            saveState();
+            render();
+        });
+        row.querySelector('.do-clear-anticoag')?.addEventListener('click', () => {
+            data.anticoagulationKey = '';
+            data.anticoagulationTiming = '';
+            data.anticoagulationStoppedDate = '';
+            saveState();
+            render();
         });
 
-        row.querySelectorAll('.do-comorb-check').forEach(input => {
-            input.onchange = () => {
-                const selected = [...row.querySelectorAll('.do-comorb-check:checked')]
-                    .map(item => item.value);
-                data.comorbidities = selected;
+        row.querySelector('.do-add-comorbidity')?.addEventListener('click', () => {
+            const value = row.querySelector('.do-new-comorbidity')?.value || '';
+            if (!value || data.comorbidities.includes(value)) return;
+            data.comorbidities.push(value);
+            saveState();
+            render();
+        });
+        row.querySelectorAll('.do-remove-comorbidity').forEach(button => {
+            button.onclick = () => {
+                data.comorbidities.splice(Number(button.dataset.index), 1);
                 saveState();
                 render();
             };
         });
 
-        row.querySelectorAll('.do-transfusion-item').forEach(itemRow => {
-            const index = Number(itemRow.dataset.index);
-            itemRow.querySelector('.do-transfusion-date').onchange = event => {
-                data.transfusions[index].date = event.target.value;
-                saveState();
-            };
-            itemRow.querySelector('.do-transfusion-type').onchange = event => {
-                data.transfusions[index].type = event.target.value;
-                saveState();
-            };
-            itemRow.querySelector('.do-remove-transfusion').onclick = () => {
-                data.transfusions.splice(index, 1);
-                saveState();
-                render();
-            };
-        });
-
-        row.querySelector('.do-add-transfusion').onclick = () => {
-            const date = row.querySelector('.do-new-transfusion-date').value;
-            const type = row.querySelector('.do-new-transfusion-type').value;
+        row.querySelector('.do-add-transfusion')?.addEventListener('click', () => {
+            const date = row.querySelector('.do-new-transfusion-date')?.value || '';
+            const type = row.querySelector('.do-new-transfusion-type')?.value || '';
+            if (!date || !type) return;
             data.transfusions.push({ date, type });
             saveState();
             render();
-        };
+        });
+        row.querySelectorAll('.do-remove-transfusion').forEach(button => {
+            button.onclick = () => {
+                data.transfusions.splice(Number(button.dataset.index), 1);
+                saveState();
+                render();
+            };
+        });
 
         row.querySelectorAll('.do-pending-item').forEach(itemRow => {
             const index = Number(itemRow.dataset.index);
             const done = itemRow.querySelector('.do-pending-done');
-            const text = itemRow.querySelector('.do-pending-text');
             done.onchange = () => {
                 data.pending[index].done = done.checked;
                 itemRow.classList.toggle('done', done.checked);
                 saveState();
                 updateStats();
-            };
-            text.oninput = () => {
-                data.pending[index].text = text.value;
-                saveState();
             };
             itemRow.querySelector('.do-remove-pending').onclick = () => {
                 data.pending.splice(index, 1);
@@ -635,26 +746,22 @@
             };
         });
 
-        const addBox = row.querySelector('.do-add-pending-box');
-        const newPendingInput = row.querySelector('.do-new-pending');
-        row.querySelector('.do-show-add-pending').onclick = () => {
-            addBox.hidden = !addBox.hidden;
-            if (!addBox.hidden) newPendingInput.focus();
-        };
         const addPending = () => {
-            const text = newPendingInput.value.trim();
-            if (!text) return;
-            data.pending.push({ text, done: false });
+            const freeText = row.querySelector('.do-new-pending-text')?.value.trim() || '';
+            const selected = row.querySelector('.do-new-pending-select')?.value || '';
+            const value = freeText || selected;
+            if (!value) return;
+            data.pending.push({ text: value, done: false });
             saveState();
             render();
         };
-        row.querySelector('.do-add-pending').onclick = addPending;
-        newPendingInput.onkeydown = event => {
+        row.querySelector('.do-add-pending')?.addEventListener('click', addPending);
+        row.querySelector('.do-new-pending-text')?.addEventListener('keydown', event => {
             if (event.key === 'Enter') {
                 event.preventDefault();
                 addPending();
             }
-        };
+        });
     }
 
     function render() {
@@ -908,32 +1015,10 @@
         const doc = getDocument();
         const overlay = doc?.getElementById(OVERLAY_ID);
         const status = overlay?.querySelector('.do-status');
-        const patients = syncPatients();
-
-        for (let index = 0; index < patients.length; index++) {
-            const patient = patients[index];
-            if (status) status.textContent = `Φόρτωση ${index + 1}/${patients.length}: ${patient.room}/${patient.bed}`;
-            try {
-                const snapshot = await fetchPatientSnapshot(patient);
-                const target = state.patients[patient.encounterNr];
-                if (target) {
-                    ['age', 'admissionDate', 'incident', 'doctor', 'surgeryDate'].forEach(field => {
-                        if (snapshot[field]) target[field] = snapshot[field];
-                    });
-                    if (snapshot.labs !== null) {
-                        target.labs = snapshot.labs;
-                    }
-                    target.fetchedAt = nowIso();
-                }
-            } catch (error) {
-                console.warn(`Daily overview patient ${patient.encounterNr}:`, error);
-            }
-            await new Promise(resolve => setTimeout(resolve, REFRESH_DELAY_MS));
-        }
-
-        saveState();
+        if (status) status.textContent = 'Ανάγνωση του τρέχοντος πλάνου...';
+        syncPatients();
         render();
-        if (status) status.textContent = 'Η ενημέρωση ολοκληρώθηκε.';
+        if (status) status.textContent = 'Η ενημέρωση από το πλάνο ολοκληρώθηκε.';
     }
 
     function currentPatientData() {
@@ -964,8 +1049,8 @@
         return `
             <section class="patient-row">
                 <div class="patient"><b>${escapeHtml(patient.room)}/${escapeHtml(patient.bed)}</b><br>${escapeHtml(patient.name)}<br><small>${escapeHtml(patient.encounterNr)}</small></div>
-                <div><b>${patient.age ? `${escapeHtml(patient.age)} ετών` : '—'}</b>${postop ? `<br><span class="postop">${escapeHtml(postop)}</span>` : ''}</div>
-                <div>${escapeHtml(patient.incident || '—')}<br><small>${escapeHtml(admission || '')}</small></div>
+                <div><b>${patient.age ? `${escapeHtml(patient.age)} ετών` : '—'}</b></div>
+                <div>${escapeHtml(patient.incident || '—')}${postop ? `<br><span class="postop">${escapeHtml(postop)}</span>` : ''}<br><small>${escapeHtml(admission || '')}</small></div>
                 <div>${escapeHtml(patient.doctor || '—')}</div>
                 <div class="labs">${printableLabs(patient.labs) || '—'}</div>
                 <div>${escapeHtml([anticoag?.title, patient.anticoagulationTiming, patient.anticoagulationStoppedDate ? `διακοπή ${formatGreekDate(patient.anticoagulationStoppedDate)}` : ''].filter(Boolean).join(' · ') || '—')}</div>
@@ -1007,7 +1092,7 @@
             </style></head><body>
             <header><div><h1>Ασκληπιός — Ημερήσια Επισκόπηση</h1><div>${formatGreekDate(todayIso())} · Θάλαμος ${escapeHtml(getWardNumber())} · ${patients.length} ασθενείς</div></div><div class="notes"><b>Σημειώσεις ημέρας</b><br>${escapeHtml(state.dailyNotes[todayIso()] || '—')}</div></header>
             <main class="board">
-                <div class="head"><div>Ασθενής</div><div>Ηλικία / ΜΤΧ</div><div>Περιστατικό / Εισαγωγή</div><div>Θεράπων</div><div>Hgb · PLTs · Ur · Cr · Na · K · SGOT · SGPT</div><div>Αντιπηκτική</div><div>Συννοσηρότητες</div><div>Μεταγγίσεις</div><div>Εκκρεμότητες</div></div>
+                <div class="head"><div>Ασθενής</div><div>Ηλικία</div><div>Περιστατικό / Εισαγωγή</div><div>Θεράπων</div><div>Εργαστηριακά</div><div>Αντιπηκτική</div><div>Συννοσηρότητες</div><div>Μεταγγίσεις</div><div>Εκκρεμότητες</div></div>
                 ${patients.map(printablePatientRow).join('')}
             </main>
             <script>window.addEventListener('load',()=>setTimeout(()=>window.print(),180));<\/script>
@@ -1040,10 +1125,10 @@
         overlay.id = OVERLAY_ID;
         overlay.innerHTML = `
             <div class="do-header">
-                <div><div class="do-title">Ασκληπιός Helper — Ημερήσια Επισκόπηση</div><div class="do-subtitle">Όλοι οι ασθενείς ταυτόχρονα · αυτόματος καθαρισμός χειροκίνητων δεδομένων μετά από 48 ώρες απουσίας</div></div>
+                <div><div class="do-title">Ασκληπιός Helper — Ημερήσια Επισκόπηση</div><div class="do-subtitle">Όλοι οι ασθενείς ταυτόχρονα · στοιχεία ηλικίας, διάγνωσης και θεράποντα απευθείας από το πλάνο</div></div>
                 <div class="do-header-actions">
                     <span class="do-status"></span>
-                    <button type="button" class="do-primary" id="do-refresh">Ενημέρωση από Ασκληπιό</button>
+                    <button type="button" class="do-primary" id="do-refresh">Ενημέρωση από πλάνο</button>
                     <button type="button" class="do-secondary" id="do-print">Εκτύπωση Α4</button>
                     <button type="button" class="do-secondary" id="do-close">Κλείσιμο</button>
                 </div>
@@ -1053,10 +1138,10 @@
                     <div class="do-board">
                         <div class="do-board-head">
                             <div>Θάλαμος / Κλίνη<br>Ασθενής</div>
-                            <div>Ηλικία<br>ΜΤΧ</div>
+                            <div>Ηλικία</div>
                             <div>Περιστατικό<br><span class="do-muted">διάγνωση / εισαγωγή</span></div>
                             <div>Θεράπων</div>
-                            <div>Εργαστηριακά<br><span class="do-muted">μόνο Hgb, PLTs, Ur, Cr, Na, K, SGOT, SGPT</span></div>
+                            <div>Εργαστηριακά</div>
                             <div>Αντιπηκτική αγωγή</div>
                             <div>Συννοσηρότητες</div>
                             <div>Μεταγγίσεις</div>
