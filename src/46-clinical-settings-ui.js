@@ -1,6 +1,6 @@
 /*
  * Asklipios — Clinical Presets & Surgery Templates Settings
- * Version 0.10.0
+ * Version 0.11.0
  */
 
 (function () {
@@ -10,7 +10,7 @@
 
     const A = window.Asklipios;
 
-    if (!A?.settingsUi || !A?.registry || !A?.localData) {
+    if (!A?.settingsUi || !A?.registry || !A?.localData || !A?.clinicalCatalog) {
         throw new Error(
             'Asklipios clinical settings dependencies are missing.'
         );
@@ -29,7 +29,19 @@
         surgeryKey: '',
         surgeryMode: 'edit',
         surgeryDraft: null,
-        surgerySearch: ''
+        surgerySearch: '',
+
+        diagnosisResults: [],
+        medicalActResults: [],
+        diagnosisSearchTimer: null,
+        medicalActSearchTimer: null,
+        diagnosisAbortController: null,
+        medicalActAbortController: null,
+
+        doctorKey: '',
+        doctorMode: 'edit',
+        doctorDraft: null,
+        doctorSearch: ''
     };
 
     function clone(value) {
@@ -165,6 +177,56 @@
                 width:100%;
                 resize:vertical;
                 min-height:72px;
+            }
+
+            #asklipios-settings-overlay .ask-clinical-results {
+                max-height:230px;
+                overflow:auto;
+                border:1px solid #b9c0c4;
+                border-radius:4px;
+                margin-top:6px;
+                background:#fff;
+            }
+
+            #asklipios-settings-overlay .ask-clinical-results-table {
+                width:100%;
+                border-collapse:collapse;
+                table-layout:fixed;
+                font-size:12px;
+            }
+
+            #asklipios-settings-overlay .ask-clinical-results-table th,
+            #asklipios-settings-overlay .ask-clinical-results-table td {
+                border-bottom:1px solid #d9dddf;
+                padding:6px;
+                text-align:left;
+                vertical-align:middle;
+                overflow-wrap:anywhere;
+            }
+
+            #asklipios-settings-overlay .ask-clinical-results-table th {
+                background:#eef2f4;
+            }
+
+            #asklipios-settings-overlay .ask-clinical-result-row {
+                cursor:pointer;
+            }
+
+            #asklipios-settings-overlay .ask-clinical-result-row:hover {
+                background:#edf4f8;
+            }
+
+            #asklipios-settings-overlay .ask-clinical-result-row.selected {
+                background:#d5f5e3;
+            }
+
+            #asklipios-settings-overlay .ask-doctor-template-preview {
+                white-space:pre-wrap;
+                background:#f5f7f8;
+                border:1px solid #c9ced1;
+                border-radius:5px;
+                padding:10px;
+                min-height:70px;
             }
 
             @media (max-width: 950px) {
@@ -352,6 +414,7 @@
                 const index = Number(button.closest('.ask-diagnosis-row')?.dataset.index);
                 state.presetDraft.diagnoses.splice(index, 1);
                 renderDiagnosisRows();
+                renderClinicalSearchResults('diagnosis');
             };
         });
 
@@ -400,6 +463,7 @@
                 const index = Number(button.closest('.ask-medact-row')?.dataset.index);
                 state.presetDraft.medicalActs.splice(index, 1);
                 renderMedicalActRows();
+                renderClinicalSearchResults('medicalAct');
             };
         });
 
@@ -409,61 +473,262 @@
         });
     }
 
-    function populateCatalogSelect(kind) {
-        const doc = getDocument();
-        const isDiagnosis = kind === 'diagnosis';
-        const input = doc?.getElementById(
-            isDiagnosis ? 'ask-diagnosis-search' : 'ask-medact-search'
-        );
-        const select = doc?.getElementById(
-            isDiagnosis ? 'ask-diagnosis-catalog' : 'ask-medact-catalog'
-        );
-        if (!select) return;
-
-        const query = (input?.value || '').trim().toLocaleLowerCase('el');
-        const catalog = isDiagnosis ? getDiagnosisCatalog() : getMedicalActCatalog();
-        const filtered = catalog.filter(item =>
-            `${item.code || ''} ${item.name || ''}`
-                .toLocaleLowerCase('el')
-                .includes(query)
-        ).slice(0, 200);
-
-        select.innerHTML =
-            '<option value="">-- Επιλογή --</option>' +
-            filtered.map(item => {
-                const originalIndex = catalog.findIndex(candidate =>
-                    `${candidate.id}|${candidate.code}|${candidate.name}` ===
-                    `${item.id}|${item.code}|${item.name}`
-                );
-                return `<option value="${originalIndex}">${escapeHtml(item.code || '')} — ${escapeHtml(item.name || '')}</option>`;
-            }).join('');
-
-        select.dataset.catalogKind = kind;
+    function clinicalItemKey(item) {
+        return `${Number(item?.id || 0)}|${String(item?.code || '')}`;
     }
 
-    function addCatalogItem(kind) {
+    function getClinicalResultState(kind) {
+        return kind === 'diagnosis'
+            ? state.diagnosisResults
+            : state.medicalActResults;
+    }
+
+    function getPresetClinicalItems(kind) {
+        return kind === 'diagnosis'
+            ? (state.presetDraft?.diagnoses || [])
+            : (state.presetDraft?.medicalActs || []);
+    }
+
+    function isClinicalItemSelected(kind, item) {
+        const key = clinicalItemKey(item);
+        return getPresetClinicalItems(kind)
+            .some(candidate => clinicalItemKey(candidate) === key);
+    }
+
+    function setClinicalSearchStatus(kind, message, type = 'info') {
         const doc = getDocument();
-        updatePresetDraftFromDom();
-
-        const isDiagnosis = kind === 'diagnosis';
-        const catalog = isDiagnosis ? getDiagnosisCatalog() : getMedicalActCatalog();
-        const select = doc?.getElementById(
-            isDiagnosis ? 'ask-diagnosis-catalog' : 'ask-medact-catalog'
+        const box = doc?.getElementById(
+            kind === 'diagnosis'
+                ? 'ask-diagnosis-live-status'
+                : 'ask-medact-live-status'
         );
-        const index = Number(select?.value);
+        if (!box) return;
 
-        if (!Number.isInteger(index) || !catalog[index]) {
-            setStatus('Επίλεξε πρώτα ένα στοιχείο από τον κατάλογο.', 'warning');
+        const colors = {
+            info: '#f4f6f7',
+            success: '#d5f5e3',
+            warning: '#fcf3cf',
+            error: '#f8d7da'
+        };
+
+        box.style.background = colors[type] || colors.info;
+        box.textContent = message;
+    }
+
+    function renderClinicalSearchResults(kind) {
+        const doc = getDocument();
+        const isDiagnosis = kind === 'diagnosis';
+        const container = doc?.getElementById(
+            isDiagnosis
+                ? 'ask-diagnosis-live-results'
+                : 'ask-medact-live-results'
+        );
+        if (!container) return;
+
+        const results = getClinicalResultState(kind);
+
+        if (!results.length) {
+            container.innerHTML = `
+                <div class="ask-muted" style="padding:12px;">
+                    Γράψε τουλάχιστον 2 χαρακτήρες για αναζήτηση στον Ασκληπιό.
+                </div>
+            `;
             return;
         }
 
-        if (isDiagnosis) {
-            state.presetDraft.diagnoses.push(clone(catalog[index]));
-            renderDiagnosisRows();
-        } else {
-            state.presetDraft.medicalActs.push(clone(catalog[index]));
-            renderMedicalActRows();
+        container.innerHTML = `
+            <table class="ask-clinical-results-table">
+                <colgroup>
+                    <col style="width:42px;">
+                    <col style="width:115px;">
+                    <col>
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th style="text-align:center;">✓</th>
+                        <th>Κωδικός</th>
+                        <th>Περιγραφή</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${results.map((item, index) => {
+                        const selected = isClinicalItemSelected(kind, item);
+                        return `
+                            <tr
+                                class="ask-clinical-result-row ${selected ? 'selected' : ''}"
+                                data-kind="${kind}"
+                                data-index="${index}"
+                                title="Διπλό κλικ για επιλογή ή αποεπιλογή"
+                            >
+                                <td style="text-align:center;">
+                                    <input
+                                        type="checkbox"
+                                        class="ask-clinical-result-check"
+                                        data-kind="${kind}"
+                                        data-index="${index}"
+                                        ${selected ? 'checked' : ''}
+                                    >
+                                </td>
+                                <td>${escapeHtml(item.displayCode || item.code || '')}</td>
+                                <td>${escapeHtml(item.name || '')}</td>
+                            </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            </table>
+        `;
+
+        container.querySelectorAll('.ask-clinical-result-check').forEach(input => {
+            input.onchange = () => {
+                toggleClinicalResult(
+                    input.dataset.kind,
+                    Number(input.dataset.index),
+                    input.checked
+                );
+            };
+        });
+
+        container.querySelectorAll('.ask-clinical-result-row').forEach(row => {
+            row.ondblclick = event => {
+                if (event.target.closest('input, button, a')) return;
+                toggleClinicalResult(
+                    row.dataset.kind,
+                    Number(row.dataset.index)
+                );
+            };
+        });
+    }
+
+    function toggleClinicalResult(kind, index, forceSelected = null) {
+        updatePresetDraftFromDom();
+
+        const results = getClinicalResultState(kind);
+        const item = results[index];
+        if (!item) return;
+
+        const list = getPresetClinicalItems(kind);
+        const key = clinicalItemKey(item);
+        const currentIndex = list.findIndex(
+            candidate => clinicalItemKey(candidate) === key
+        );
+        const selected = currentIndex >= 0;
+        const shouldSelect = forceSelected === null
+            ? !selected
+            : Boolean(forceSelected);
+
+        if (shouldSelect && !selected) {
+            const normalized = clone(item);
+            normalized.default = list.length === 0;
+
+            if (kind === 'diagnosis') {
+                normalized.course = normalized.course || '';
+                normalized.therapy = normalized.therapy || '';
+                state.presetDraft.diagnoses.push(normalized);
+                renderDiagnosisRows();
+            } else {
+                normalized.requireLr = normalized.requireLr === true;
+                state.presetDraft.medicalActs.push(normalized);
+                renderMedicalActRows();
+            }
+        } else if (!shouldSelect && selected) {
+            list.splice(currentIndex, 1);
+
+            if (kind === 'diagnosis') {
+                renderDiagnosisRows();
+            } else {
+                renderMedicalActRows();
+            }
         }
+
+        renderClinicalSearchResults(kind);
+    }
+
+    async function runClinicalSearch(kind) {
+        const doc = getDocument();
+        const isDiagnosis = kind === 'diagnosis';
+        const input = doc?.getElementById(
+            isDiagnosis
+                ? 'ask-diagnosis-live-search'
+                : 'ask-medact-live-search'
+        );
+        const query = String(input?.value || '').trim();
+
+        if (query.length < 2) {
+            if (isDiagnosis) {
+                state.diagnosisResults = [];
+            } else {
+                state.medicalActResults = [];
+            }
+            renderClinicalSearchResults(kind);
+            setClinicalSearchStatus(
+                kind,
+                'Γράψε τουλάχιστον 2 χαρακτήρες.',
+                'info'
+            );
+            return;
+        }
+
+        const controllerKey = isDiagnosis
+            ? 'diagnosisAbortController'
+            : 'medicalActAbortController';
+
+        state[controllerKey]?.abort();
+        const controller = new AbortController();
+        state[controllerKey] = controller;
+
+        setClinicalSearchStatus(kind, 'Αναζήτηση στον Ασκληπιό…', 'info');
+
+        try {
+            const results = isDiagnosis
+                ? await A.clinicalCatalog.searchDiagnoses(
+                    query,
+                    { signal: controller.signal }
+                )
+                : await A.clinicalCatalog.searchMedicalActs(
+                    query,
+                    { signal: controller.signal }
+                );
+
+            if (controller.signal.aborted) return;
+
+            if (isDiagnosis) {
+                state.diagnosisResults = results;
+            } else {
+                state.medicalActResults = results;
+            }
+
+            renderClinicalSearchResults(kind);
+            setClinicalSearchStatus(
+                kind,
+                results.length
+                    ? `${results.length} αποτελέσματα.`
+                    : 'Δεν βρέθηκαν αποτελέσματα.',
+                results.length ? 'success' : 'warning'
+            );
+        } catch (error) {
+            if (error?.name === 'AbortError') return;
+
+            if (isDiagnosis) {
+                state.diagnosisResults = [];
+            } else {
+                state.medicalActResults = [];
+            }
+
+            renderClinicalSearchResults(kind);
+            setClinicalSearchStatus(kind, error.message, 'error');
+        }
+    }
+
+    function scheduleClinicalSearch(kind) {
+        const timerKey = kind === 'diagnosis'
+            ? 'diagnosisSearchTimer'
+            : 'medicalActSearchTimer';
+
+        clearTimeout(state[timerKey]);
+        state[timerKey] = setTimeout(
+            () => runClinicalSearch(kind),
+            350
+        );
     }
 
     function addManualItem(kind) {
@@ -738,9 +1003,12 @@
                         <div class="ask-clinical-section">
                             <b>Διαγνώσεις ICD-10</b>
                             <div style="display:grid;grid-template-columns:1fr;gap:5px;margin-top:7px;">
-                                <input id="ask-diagnosis-search" class="ask-input" placeholder="Αναζήτηση γνωστής διάγνωσης">
-                                <select id="ask-diagnosis-catalog" class="ask-input"></select>
-                                <div style="display:flex;gap:6px;"><button type="button" id="ask-add-diagnosis-catalog" class="ask-btn ask-btn-primary">+ Από κατάλογο</button><button type="button" id="ask-add-diagnosis-manual" class="ask-btn">+ Χειροκίνητα</button></div>
+                                <input id="ask-diagnosis-live-search" class="ask-input" placeholder="Κωδικός ή περιγραφή, π.χ. M17">
+                                <div id="ask-diagnosis-live-results" class="ask-clinical-results"></div>
+                                <div style="display:flex;justify-content:space-between;gap:6px;align-items:center;">
+                                    <span id="ask-diagnosis-live-status" class="ask-muted" style="padding:4px 6px;border-radius:4px;">Γράψε τουλάχιστον 2 χαρακτήρες.</span>
+                                    <button type="button" id="ask-add-diagnosis-manual" class="ask-btn">+ Χειροκίνητα</button>
+                                </div>
                             </div>
                             <div id="ask-diagnosis-rows"></div>
                         </div>
@@ -748,9 +1016,12 @@
                         <div class="ask-clinical-section">
                             <b>Ιατρικές πράξεις</b>
                             <div style="display:grid;grid-template-columns:1fr;gap:5px;margin-top:7px;">
-                                <input id="ask-medact-search" class="ask-input" placeholder="Αναζήτηση γνωστής ιατρικής πράξης">
-                                <select id="ask-medact-catalog" class="ask-input"></select>
-                                <div style="display:flex;gap:6px;"><button type="button" id="ask-add-medact-catalog" class="ask-btn ask-btn-primary">+ Από κατάλογο</button><button type="button" id="ask-add-medact-manual" class="ask-btn">+ Χειροκίνητα</button></div>
+                                <input id="ask-medact-live-search" class="ask-input" placeholder="Κωδικός ή περιγραφή, π.χ. ήλωση">
+                                <div id="ask-medact-live-results" class="ask-clinical-results"></div>
+                                <div style="display:flex;justify-content:space-between;gap:6px;align-items:center;">
+                                    <span id="ask-medact-live-status" class="ask-muted" style="padding:4px 6px;border-radius:4px;">Γράψε τουλάχιστον 2 χαρακτήρες.</span>
+                                    <button type="button" id="ask-add-medact-manual" class="ask-btn">+ Χειροκίνητα</button>
+                                </div>
                             </div>
                             <div id="ask-medact-rows"></div>
                         </div>
@@ -788,18 +1059,20 @@
         doc.getElementById('ask-restore-preset').onclick = restorePreset;
         doc.getElementById('ask-reset-presets').onclick = resetAllPresets;
 
-        doc.getElementById('ask-diagnosis-search').oninput = () => populateCatalogSelect('diagnosis');
-        doc.getElementById('ask-medact-search').oninput = () => populateCatalogSelect('medact');
-        doc.getElementById('ask-add-diagnosis-catalog').onclick = () => addCatalogItem('diagnosis');
-        doc.getElementById('ask-add-diagnosis-manual').onclick = () => addManualItem('diagnosis');
-        doc.getElementById('ask-add-medact-catalog').onclick = () => addCatalogItem('medact');
-        doc.getElementById('ask-add-medact-manual').onclick = () => addManualItem('medact');
+        doc.getElementById('ask-diagnosis-live-search').oninput = () =>
+            scheduleClinicalSearch('diagnosis');
+        doc.getElementById('ask-medact-live-search').oninput = () =>
+            scheduleClinicalSearch('medicalAct');
+        doc.getElementById('ask-add-diagnosis-manual').onclick = () =>
+            addManualItem('diagnosis');
+        doc.getElementById('ask-add-medact-manual').onclick = () =>
+            addManualItem('medact');
 
-        populateCatalogSelect('diagnosis');
-        populateCatalogSelect('medact');
         renderPresetList();
         renderDiagnosisRows();
         renderMedicalActRows();
+        renderClinicalSearchResults('diagnosis');
+        renderClinicalSearchResults('medicalAct');
     }
 
     function createSurgeryDraft(key = '') {
@@ -877,9 +1150,7 @@
         renderSurgeryTab();
 
         setStatus(
-            description.trim()
-                ? `Το πρακτικό για το preset "${key}" αποθηκεύτηκε.`
-                : `Το πρακτικό για το preset "${key}" αποθηκεύτηκε κενό.`,
+            `Το πρακτικό για το preset "${key}" αποθηκεύτηκε.`,
             'success'
         );
     }
@@ -888,7 +1159,7 @@
         const key = state.surgeryKey;
         if (!key) return;
 
-        if (!confirm(`Να γίνει κενό το πρακτικό για το preset "${key}";`)) {
+        if (!confirm(`Να καθαριστεί το κείμενο του πρακτικού για το preset "${key}";`)) {
             return;
         }
 
@@ -897,7 +1168,7 @@
         state.surgeryDraft = createSurgeryDraft(key);
         refreshRuntimeControls();
         renderSurgeryTab();
-        setStatus(`Το πρακτικό για το "${key}" είναι πλέον κενό.`, 'success');
+        setStatus(`Το κείμενο του πρακτικού για το "${key}" καθαρίστηκε.`, 'success');
     }
 
     function restoreSurgeryTemplate() {
@@ -910,7 +1181,7 @@
         if (!confirm(
             hasFactory
                 ? `Να επανέλθει το πρακτικό του "${key}" στην εργοστασιακή μορφή;`
-                : `Το "${key}" δεν έχει εργοστασιακό κείμενο. Να αφαιρεθεί η τοπική αλλαγή και να μείνει κενό;`
+                : `Το "${key}" δεν έχει εργοστασιακό κείμενο. Να αφαιρεθεί η τοπική αλλαγή;`
         )) {
             return;
         }
@@ -923,7 +1194,7 @@
         setStatus(
             hasFactory
                 ? 'Το πρακτικό επανήλθε στην εργοστασιακή μορφή.'
-                : 'Η τοπική αλλαγή αφαιρέθηκε και το πρακτικό έμεινε κενό.',
+                : 'Η τοπική αλλαγή αφαιρέθηκε.',
             'success'
         );
     }
@@ -939,27 +1210,15 @@
         );
 
         list.innerHTML = keys.length
-            ? keys.map(key => {
-                const local = getSurgeryLocalState(key);
-                const badge = local.isModified
-                    ? 'Τροποποιημένο'
-                    : local.isCleared
-                        ? 'Κενό'
-                        : local.hasEffectiveText
-                            ? 'Έτοιμο'
-                            : 'Κενό';
-
-                return `
-                    <button
-                        type="button"
-                        class="ask-clinical-item ${key === state.surgeryKey ? 'active' : ''}"
-                        data-key="${escapeHtml(key)}"
-                    >
-                        ${escapeHtml(key)}
-                        <span class="ask-muted"> — ${badge}</span>
-                    </button>
-                `;
-            }).join('')
+            ? keys.map(key => `
+                <button
+                    type="button"
+                    class="ask-clinical-item ${key === state.surgeryKey ? 'active' : ''}"
+                    data-key="${escapeHtml(key)}"
+                >
+                    ${escapeHtml(key)}
+                </button>
+            `).join('')
             : '<div class="ask-muted" style="padding:12px;">Δεν βρέθηκαν presets.</div>';
 
         list.querySelectorAll('.ask-clinical-item').forEach(button => {
@@ -1029,7 +1288,7 @@
                             class="ask-btn ask-btn-danger"
                             ${state.surgeryKey ? '' : 'disabled'}
                         >
-                            Κενό πρακτικό
+                            Καθαρισμός κειμένου
                         </button>
 
                         <button
@@ -1062,13 +1321,8 @@
                             id="ask-surgery-template-description"
                             class="ask-input"
                             style="min-height:470px;"
-                            placeholder="Αν δεν υπάρχει πρότυπο πρακτικού, άφησέ το κενό."
+                            placeholder="Κείμενο πρακτικού χειρουργείου"
                         >${escapeHtml(state.surgeryDraft?.description || '')}</textarea>
-                    </div>
-
-                    <div class="ask-muted" style="margin-top:7px;">
-                        Το κείμενο συνδέεται αυτόματα με το επιλεγμένο preset περιστατικού.
-                        Δεν υπάρχει ξεχωριστή επιλογή προτύπου μέσα στην Ιατρική Καρτέλα.
                     </div>
                 </div>
             </div>
@@ -1109,6 +1363,369 @@
         renderSurgeryList();
     }
 
+
+    function buildFactoryDoctorTemplate(key, entry = {}) {
+        if (typeof entry?.template === 'string') {
+            return entry.template;
+        }
+
+        const time = String(entry?.time || '').trim();
+        const doctorLabel = String(entry?.doctorLabel || '').trim();
+        const suffix = [
+            time ? `και ώρα ${time}` : '',
+            doctorLabel ? `(${doctorLabel})` : ''
+        ].filter(Boolean).join(' ');
+
+        return [
+            'Επανεξέταση στα Τακτικά Εξωτερικά Ιατρεία της Ορθοπαιδικής Κλινικής',
+            'στις {{ημερομηνία}}',
+            suffix
+        ].filter(Boolean).join(' ') + '.';
+    }
+
+    function createDoctorDraft(key = '') {
+        const entry = A.data.DOCTOR_FOLLOWUP_TEXTS?.[key] || {};
+
+        return {
+            name: key,
+            template: key
+                ? buildFactoryDoctorTemplate(key, entry)
+                : 'Επανεξέταση στα Τακτικά Εξωτερικά Ιατρεία της Ορθοπαιδικής Κλινικής στις {{ημερομηνία}} ({{θεράπων}}).'
+        };
+    }
+
+    function ensureDoctorSelection() {
+        if (state.doctorDraft) return;
+
+        const first = sortedKeys(A.data.DOCTOR_FOLLOWUP_TEXTS)[0] || '';
+        state.doctorKey = first;
+        state.doctorMode = first ? 'edit' : 'new';
+        state.doctorDraft = createDoctorDraft(first);
+    }
+
+    function updateDoctorDraftFromDom() {
+        const doc = getDocument();
+        if (!doc || !state.doctorDraft) return;
+
+        state.doctorDraft.name =
+            doc.getElementById('ask-doctor-name')?.value.trim() || '';
+        state.doctorDraft.template =
+            doc.getElementById('ask-doctor-template')?.value || '';
+    }
+
+    function renderDoctorPreview() {
+        const doc = getDocument();
+        const box = doc?.getElementById('ask-doctor-template-preview');
+        const textarea = doc?.getElementById('ask-doctor-template');
+        const name = doc?.getElementById('ask-doctor-name')?.value.trim() ||
+            state.doctorDraft?.name || 'Θεράπων Ιατρός';
+        if (!box || !textarea) return;
+
+        const sampleDate = new Date();
+        const dateText = [
+            String(sampleDate.getDate()).padStart(2, '0'),
+            String(sampleDate.getMonth() + 1).padStart(2, '0'),
+            sampleDate.getFullYear()
+        ].join('/');
+
+        box.textContent = String(textarea.value || '')
+            .replaceAll('{{ημερομηνία}}', dateText)
+            .replaceAll('{{θεράπων}}', name);
+    }
+
+    function insertDoctorPlaceholder(placeholder) {
+        const doc = getDocument();
+        const textarea = doc?.getElementById('ask-doctor-template');
+        if (!textarea) return;
+
+        const start = textarea.selectionStart ?? textarea.value.length;
+        const end = textarea.selectionEnd ?? textarea.value.length;
+        textarea.setRangeText(placeholder, start, end, 'end');
+        textarea.focus();
+        renderDoctorPreview();
+    }
+
+    function saveDoctorTemplate() {
+        updateDoctorDraftFromDom();
+
+        const draft = clone(state.doctorDraft);
+        const oldKey = state.doctorKey;
+        const newKey = draft.name;
+
+        if (!newKey) {
+            throw new Error('Το όνομα του θεράποντα είναι υποχρεωτικό.');
+        }
+
+        if (!draft.template.trim()) {
+            throw new Error('Το κείμενο οδηγιών εξόδου είναι υποχρεωτικό.');
+        }
+
+        if (
+            newKey !== oldKey &&
+            Object.prototype.hasOwnProperty.call(
+                A.data.DOCTOR_FOLLOWUP_TEXTS || {},
+                newKey
+            )
+        ) {
+            throw new Error(`Υπάρχει ήδη θεράπων με όνομα "${newKey}".`);
+        }
+
+        A.localData.createBackup();
+
+        const previous =
+            A.data.DOCTOR_FOLLOWUP_TEXTS?.[oldKey] || {};
+
+        A.registry.setMapItem('DOCTOR_FOLLOWUP_TEXTS', newKey, {
+            ...clone(previous),
+            template: draft.template
+        });
+
+        if (state.doctorMode === 'edit' && oldKey && oldKey !== newKey) {
+            A.registry.deleteMapItem('DOCTOR_FOLLOWUP_TEXTS', oldKey);
+        }
+
+        state.doctorKey = newKey;
+        state.doctorMode = 'edit';
+        state.doctorDraft = createDoctorDraft(newKey);
+        refreshRuntimeControls();
+        renderDoctorsTab();
+        setStatus(`Ο θεράπων "${newKey}" αποθηκεύτηκε.`, 'success');
+    }
+
+    function deleteDoctorTemplate() {
+        if (!state.doctorKey || state.doctorMode !== 'edit') return;
+        const key = state.doctorKey;
+
+        if (!confirm(`Να αφαιρεθεί ο θεράπων "${key}" από τις ρυθμίσεις;`)) {
+            return;
+        }
+
+        A.localData.createBackup();
+        A.registry.deleteMapItem('DOCTOR_FOLLOWUP_TEXTS', key);
+
+        const next = sortedKeys(A.data.DOCTOR_FOLLOWUP_TEXTS)[0] || '';
+        state.doctorKey = next;
+        state.doctorMode = next ? 'edit' : 'new';
+        state.doctorDraft = createDoctorDraft(next);
+        refreshRuntimeControls();
+        renderDoctorsTab();
+        setStatus(`Ο θεράπων "${key}" αφαιρέθηκε.`, 'success');
+    }
+
+    function restoreDoctorTemplate() {
+        if (!state.doctorKey) return;
+
+        const factory =
+            A.registry.getFactorySection('DOCTOR_FOLLOWUP_TEXTS') || {};
+
+        if (!Object.prototype.hasOwnProperty.call(factory, state.doctorKey)) {
+            setStatus(
+                'Ο συγκεκριμένος θεράπων δεν έχει εργοστασιακή έκδοση.',
+                'warning'
+            );
+            return;
+        }
+
+        if (!confirm(`Να επανέλθει το κείμενο του "${state.doctorKey}";`)) {
+            return;
+        }
+
+        A.localData.createBackup();
+        A.registry.restoreMapItem(
+            'DOCTOR_FOLLOWUP_TEXTS',
+            state.doctorKey
+        );
+        state.doctorDraft = createDoctorDraft(state.doctorKey);
+        refreshRuntimeControls();
+        renderDoctorsTab();
+        setStatus('Το κείμενο επανήλθε στην εργοστασιακή μορφή.', 'success');
+    }
+
+    function renderDoctorList() {
+        const doc = getDocument();
+        const list = doc?.getElementById('ask-doctor-list');
+        if (!list) return;
+
+        const query = state.doctorSearch.trim().toLocaleLowerCase('el');
+        const keys = sortedKeys(A.data.DOCTOR_FOLLOWUP_TEXTS).filter(key =>
+            key.toLocaleLowerCase('el').includes(query)
+        );
+
+        list.innerHTML = keys.length
+            ? keys.map(key => `
+                <button
+                    type="button"
+                    class="ask-clinical-item ${state.doctorMode === 'edit' && key === state.doctorKey ? 'active' : ''}"
+                    data-key="${escapeHtml(key)}"
+                >
+                    ${escapeHtml(key)}
+                </button>
+            `).join('')
+            : '<div class="ask-muted" style="padding:12px;">Δεν βρέθηκαν θεράποντες.</div>';
+
+        list.querySelectorAll('.ask-clinical-item').forEach(button => {
+            button.onclick = () => {
+                state.doctorKey = button.dataset.key;
+                state.doctorMode = 'edit';
+                state.doctorDraft = createDoctorDraft(state.doctorKey);
+                renderDoctorsTab();
+            };
+        });
+    }
+
+    function renderDoctorsTab() {
+        const doc = getDocument();
+        const content = doc?.getElementById('asklipios-settings-content');
+        if (!content) return;
+
+        ensureStyle(doc);
+        ensureDoctorSelection();
+
+        const modification = state.doctorMode === 'edit'
+            ? getModificationState(
+                'DOCTOR_FOLLOWUP_TEXTS',
+                state.doctorKey
+            )
+            : { isFactory: false };
+
+        const doctorSuggestions = (
+            A.runtime?.getDoctors?.() || []
+        ).map(doctor => String(doctor?.name || '').trim())
+            .filter(Boolean);
+
+        content.innerHTML = `
+            <div class="ask-clinical-grid">
+                <div class="ask-card">
+                    <div class="ask-editor-toolbar">
+                        <button type="button" id="ask-new-doctor" class="ask-btn ask-btn-primary">+ Νέος</button>
+                        <button type="button" id="ask-duplicate-doctor" class="ask-btn">Αντιγραφή</button>
+                    </div>
+
+                    <input
+                        id="ask-doctor-search"
+                        class="ask-input"
+                        placeholder="Αναζήτηση θεράποντα"
+                        value="${escapeHtml(state.doctorSearch)}"
+                    >
+
+                    <div id="ask-doctor-list" class="ask-clinical-list"></div>
+
+                    <button
+                        type="button"
+                        id="ask-reset-doctors"
+                        class="ask-btn ask-btn-danger"
+                        style="width:100%;margin-top:10px;"
+                    >
+                        Επαναφορά όλων των θεραπόντων
+                    </button>
+                </div>
+
+                <div class="ask-card ask-template-editor">
+                    <div class="ask-editor-toolbar">
+                        <button type="button" id="ask-save-doctor" class="ask-btn ask-btn-success">Αποθήκευση</button>
+                        <button type="button" id="ask-delete-doctor" class="ask-btn ask-btn-danger" ${state.doctorMode === 'new' ? 'disabled' : ''}>Διαγραφή</button>
+                        <button type="button" id="ask-restore-doctor" class="ask-btn" ${state.doctorMode === 'edit' && modification.isFactory ? '' : 'disabled'}>Επαναφορά εργοστασιακού</button>
+                    </div>
+
+                    <label class="ask-form-label">Όνομα όπως εμφανίζεται στον Ασκληπιό</label>
+                    <input
+                        id="ask-doctor-name"
+                        class="ask-input"
+                        list="ask-doctor-name-suggestions"
+                        value="${escapeHtml(state.doctorDraft?.name || '')}"
+                        placeholder="π.χ. ΜΠΑΡΓΙΩΤΑΣ ΚΩΝ/ΝΟΣ"
+                    >
+                    <datalist id="ask-doctor-name-suggestions">
+                        ${doctorSuggestions.map(name => `<option value="${escapeHtml(name)}"></option>`).join('')}
+                    </datalist>
+
+                    <div style="margin-top:12px;">
+                        <label class="ask-form-label">Κείμενο στις οδηγίες εξόδου</label>
+                        <textarea
+                            id="ask-doctor-template"
+                            class="ask-input"
+                            style="min-height:230px;"
+                        >${escapeHtml(state.doctorDraft?.template || '')}</textarea>
+                    </div>
+
+                    <div class="ask-editor-toolbar" style="margin-top:8px;">
+                        <button type="button" id="ask-insert-doctor-date" class="ask-btn">+ Ημερομηνία επανεξέτασης</button>
+                        <button type="button" id="ask-insert-doctor-name" class="ask-btn">+ Όνομα θεράποντα</button>
+                    </div>
+
+                    <div class="ask-muted" style="margin-top:8px;">
+                        Η επιλεγμένη ημερομηνία αντικαθιστά το <b>{{ημερομηνία}}</b> και το όνομα του ιατρού το <b>{{θεράπων}}</b>.
+                    </div>
+
+                    <label class="ask-form-label" style="margin-top:12px;">Προεπισκόπηση</label>
+                    <div id="ask-doctor-template-preview" class="ask-doctor-template-preview"></div>
+                </div>
+            </div>
+        `;
+
+        doc.getElementById('ask-new-doctor').onclick = () => {
+            state.doctorKey = '';
+            state.doctorMode = 'new';
+            state.doctorDraft = createDoctorDraft('');
+            renderDoctorsTab();
+            doc.getElementById('ask-doctor-name')?.focus();
+        };
+
+        doc.getElementById('ask-duplicate-doctor').onclick = () => {
+            updateDoctorDraftFromDom();
+            const copy = clone(state.doctorDraft);
+            copy.name = `${copy.name} - ΑΝΤΙΓΡΑΦΟ`;
+            state.doctorKey = '';
+            state.doctorMode = 'new';
+            state.doctorDraft = copy;
+            renderDoctorsTab();
+        };
+
+        doc.getElementById('ask-doctor-search').oninput = event => {
+            state.doctorSearch = event.target.value;
+            renderDoctorList();
+        };
+
+        doc.getElementById('ask-doctor-name').oninput = renderDoctorPreview;
+        doc.getElementById('ask-doctor-template').oninput = renderDoctorPreview;
+        doc.getElementById('ask-insert-doctor-date').onclick = () =>
+            insertDoctorPlaceholder('{{ημερομηνία}}');
+        doc.getElementById('ask-insert-doctor-name').onclick = () =>
+            insertDoctorPlaceholder('{{θεράπων}}');
+
+        doc.getElementById('ask-save-doctor').onclick = () => {
+            try {
+                saveDoctorTemplate();
+            } catch (error) {
+                setStatus(error.message, 'error');
+            }
+        };
+
+        doc.getElementById('ask-delete-doctor').onclick =
+            deleteDoctorTemplate;
+        doc.getElementById('ask-restore-doctor').onclick =
+            restoreDoctorTemplate;
+
+        doc.getElementById('ask-reset-doctors').onclick = () => {
+            if (!confirm('Να διαγραφούν όλες οι τοπικές αλλαγές των θεραπόντων;')) {
+                return;
+            }
+
+            A.localData.createBackup();
+            A.registry.resetSection('DOCTOR_FOLLOWUP_TEXTS');
+            const first = sortedKeys(A.data.DOCTOR_FOLLOWUP_TEXTS)[0] || '';
+            state.doctorKey = first;
+            state.doctorMode = first ? 'edit' : 'new';
+            state.doctorDraft = createDoctorDraft(first);
+            refreshRuntimeControls();
+            renderDoctorsTab();
+            setStatus('Οι θεράποντες επανήλθαν στις εργοστασιακές τιμές.', 'success');
+        };
+
+        renderDoctorList();
+        renderDoctorPreview();
+    }
+
     function refreshMedicalPresetSelect() {
         const doc = getDocument();
         const select = doc?.getElementById('mc-preset');
@@ -1127,18 +1744,20 @@
 
     A.settingsUi.registerTab('presets', renderPresetsTab);
     A.settingsUi.registerTab('surgery', renderSurgeryTab);
+    A.settingsUi.registerTab('doctors', renderDoctorsTab);
 
     window.addEventListener('asklipios:data-changed', refreshRuntimeControls);
 
     A.clinicalSettingsUi = {
         refreshRuntimeControls,
         renderPresetsTab,
-        renderSurgeryTab
+        renderSurgeryTab,
+        renderDoctorsTab
     };
 
     A.modules.clinicalSettingsUi = {
         loaded: true,
-        version: '0.10.0'
+        version: '0.11.0'
     };
 
     console.log('Asklipios clinical settings UI loaded');
