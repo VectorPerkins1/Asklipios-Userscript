@@ -1,7 +1,7 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.7.0
+ * Version 0.8.0
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
@@ -78,7 +78,7 @@
     A.modules = A.modules || {};
     A.modules.legacyApp = {
         loaded: true,
-        version: '0.7.0'
+        version: '0.8.0'
     };
 
 
@@ -99,6 +99,15 @@
 
     function cleanText(el) {
         return (el?.innerText || "").replace(/\s+/g, " ").trim();
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
     }
 
     function initDateTime() {
@@ -395,9 +404,14 @@
             <div style="margin-top:8px;">
                 Πακέτο:
                 <select id="lab-package" style="width:100%;margin-top:4px;">
-                    <option value="ΓΕΝΙΚΗ ΑΙΜΑΤΟΣ">ΓΕΝΙΚΗ ΑΙΜΑΤΟΣ</option>
-                    <option value="FULL ΠΑΚΕΤΟ ΧΩΡΙΣ ΠΗΞΗ">FULL ΠΑΚΕΤΟ ΧΩΡΙΣ ΠΗΞΗ</option>
-                    <option value="FULL ΠΑΚΕΤΟ">FULL ΠΑΚΕΤΟ</option>
+                    ${Object.keys(PACKAGES)
+                        .sort((a, b) => a.localeCompare(b, "el"))
+                        .map(name => `
+                            <option value="${escapeHtml(name)}">
+                                ${escapeHtml(name)}
+                            </option>
+                        `)
+                        .join("")}
                 </select>
             </div>
 
@@ -558,7 +572,7 @@
 
     function selectedPackageName() {
         const doc = getNursingFrame().document;
-        return doc.getElementById("lab-package").value;
+        return doc.getElementById("lab-package")?.value || "";
     }
 
     function log(msg) {
@@ -587,19 +601,21 @@
 }
 
 function defaultVialsForPackage(packageName) {
-    if (packageName === "ΓΕΝΙΚΗ ΑΙΜΑΤΟΣ") {
-        return { general: true, biochem: false, coag: false };
-    }
+    const exams = PACKAGES[packageName] || [];
 
-    if (packageName === "FULL ΠΑΚΕΤΟ ΧΩΡΙΣ ΠΗΞΗ") {
-        return { general: true, biochem: true, coag: false };
-    }
+    return {
+        general: exams.some(
+            exam => exam.lab === 5 && exam.dep === 1
+        ),
 
-    if (packageName === "FULL ΠΑΚΕΤΟ") {
-        return { general: true, biochem: true, coag: true };
-    }
+        biochem: exams.some(
+            exam => exam.lab === 1
+        ),
 
-    return { general: false, biochem: false, coag: false };
+        coag: exams.some(
+            exam => exam.lab === 5 && exam.dep === 3
+        )
+    };
 }
 
 function openVialsPanel() {
@@ -705,20 +721,22 @@ function openVialsPanel() {
     doc.getElementById("vials-send").onclick = sendVialsOrders;
 }
 
-function getExamGroups() {
-    const general = PACKAGES["ΓΕΝΙΚΗ ΑΙΜΑΤΟΣ"];
+function getExamGroups(packageName = selectedPackageName()) {
+    const exams = PACKAGES[packageName] || [];
 
-    const fullNoCoag = PACKAGES["FULL ΠΑΚΕΤΟ ΧΩΡΙΣ ΠΗΞΗ"];
-    const full = PACKAGES["FULL ΠΑΚΕΤΟ"];
+    const isGeneral =
+        exam => exam.lab === 5 && exam.dep === 1;
 
-    const isGeneral = e => e.lab === 5 && e.dep === 1;
-    const isCoag = e => e.lab === 5 && e.dep === 3;
-    const isBiochem = e => e.lab === 1;
+    const isCoag =
+        exam => exam.lab === 5 && exam.dep === 3;
+
+    const isBiochem =
+        exam => exam.lab === 1;
 
     return {
-        general: full.filter(isGeneral),
-        biochem: fullNoCoag.filter(isBiochem),
-        coag: full.filter(isCoag)
+        general: exams.filter(isGeneral),
+        biochem: exams.filter(isBiochem),
+        coag: exams.filter(isCoag)
     };
 }
 
@@ -1297,7 +1315,7 @@ async function sendAdmissionOrders() {
         let exams = [];
 
         if (pentada) {
-            exams = exams.concat(PACKAGES["FULL ΠΑΚΕΤΟ"]);
+            exams = exams.concat(PACKAGES["FULL ΠΑΚΕΤΟ"] || []);
         }
 
         if (thyroid) {
@@ -1590,7 +1608,7 @@ async function sendVialsOrders() {
         return;
     }
 
-    const groups = getExamGroups();
+    const groups = getExamGroups(selectedPackageName());
     const rows = [...doc.querySelectorAll("#lab-vials-panel tr[data-encounter]")];
 
     if (!rows.length) {
@@ -1691,7 +1709,7 @@ async function sendVialsOrders() {
             userId: "50",
             sendDate: selectedDateTime(),
             orderComments: "",
-            selectedExams: PACKAGES[packageName]
+            selectedExams: PACKAGES[packageName] || []
         };
 
         const res = await fetch(window.location.origin + "/laboratory-exams/order", {
@@ -1988,7 +2006,9 @@ async function sendVialsOrders() {
                         <select id="mc-company" style="width:100%;margin-top:4px;">
                             <option value="">-- Επιλογή --</option>
                             ${MEDICAL_CARD_COMPANIES.map(c => `
-                                <option value="${c}">${c}</option>
+                                <option value="${escapeHtml(c)}">
+                                    ${escapeHtml(c)}
+                                </option>
                             `).join("")}
                         </select>
                     </div>
