@@ -1,6 +1,6 @@
 /*
  * Asklipios — Clinical Presets & Surgery Templates Settings
- * Version 0.11.0
+ * Version 0.12.0
  */
 
 (function () {
@@ -41,7 +41,12 @@
         doctorKey: '',
         doctorMode: 'edit',
         doctorDraft: null,
-        doctorSearch: ''
+        doctorSearch: '',
+
+        anticoagulationKey: '',
+        anticoagulationMode: 'edit',
+        anticoagulationDraft: null,
+        anticoagulationSearch: ''
     };
 
     function clone(value) {
@@ -1726,6 +1731,290 @@
         renderDoctorPreview();
     }
 
+
+    const FACTORY_ANTICOAGULATION_LABELS = {
+        Xarelto10: 'Xarelto 10mg',
+        Xarelto20: 'Xarelto 20mg',
+        Eliquis5: 'Eliquis 5mg',
+        'Eliquis2.5': 'Eliquis 2.5mg',
+        Pradaxa: 'Pradaxa',
+        Sintrom: 'Sintrom',
+        Ivor3500: 'Ivor 3500',
+        Ivor2500: 'Ivor 2500',
+        Clexane40: 'Clexane 4000',
+        Clexane60: 'Clexane 6000',
+        'Arixtra2.5': 'Arixtra 2.5mg'
+    };
+
+    function normalizeAnticoagulationEntry(key, value) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            return {
+                key,
+                title: String(value.title || key).trim(),
+                text: String(value.text || '')
+            };
+        }
+
+        return {
+            key,
+            title: FACTORY_ANTICOAGULATION_LABELS[key] || key,
+            text: String(value || '')
+        };
+    }
+
+    function getAnticoagulationEntries() {
+        return Object.entries(A.data.ANTICOAGULATION_TEXTS || {})
+            .map(([key, value]) => normalizeAnticoagulationEntry(key, value))
+            .sort((a, b) => a.title.localeCompare(b.title, 'el'));
+    }
+
+    function createAnticoagulationDraft(key = '') {
+        if (!key) {
+            return { key: '', title: '', text: '' };
+        }
+
+        return normalizeAnticoagulationEntry(
+            key,
+            A.data.ANTICOAGULATION_TEXTS?.[key]
+        );
+    }
+
+    function ensureAnticoagulationSelection() {
+        if (state.anticoagulationDraft) return;
+
+        const first = getAnticoagulationEntries()[0]?.key || '';
+        state.anticoagulationKey = first;
+        state.anticoagulationMode = first ? 'edit' : 'new';
+        state.anticoagulationDraft = createAnticoagulationDraft(first);
+    }
+
+    function updateAnticoagulationDraftFromDom() {
+        const doc = getDocument();
+        if (!doc || !state.anticoagulationDraft) return;
+
+        state.anticoagulationDraft.title =
+            doc.getElementById('ask-anticoag-title')?.value.trim() || '';
+        state.anticoagulationDraft.text =
+            doc.getElementById('ask-anticoag-text')?.value || '';
+    }
+
+    function createAnticoagulationKey(title) {
+        const base = String(title || 'anticoagulation')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-zA-Z0-9Α-Ωα-ω]+/gu, '-')
+            .replace(/^-+|-+$/g, '')
+            .toLocaleLowerCase('el') || 'anticoagulation';
+
+        let candidate = `custom-${base}`;
+        let index = 2;
+
+        while (Object.prototype.hasOwnProperty.call(
+            A.data.ANTICOAGULATION_TEXTS || {}, candidate
+        )) {
+            candidate = `custom-${base}-${index++}`;
+        }
+
+        return candidate;
+    }
+
+    function saveAnticoagulation() {
+        updateAnticoagulationDraftFromDom();
+
+        const draft = state.anticoagulationDraft;
+        const title = String(draft?.title || '').trim();
+        const text = String(draft?.text || '').trim();
+
+        if (!title) {
+            throw new Error('Ο τίτλος της αντιπηκτικής αγωγής είναι υποχρεωτικός.');
+        }
+
+        if (!text) {
+            throw new Error('Το κείμενο των οδηγιών εξόδου είναι υποχρεωτικό.');
+        }
+
+        const key = state.anticoagulationMode === 'edit' && state.anticoagulationKey
+            ? state.anticoagulationKey
+            : createAnticoagulationKey(title);
+
+        A.registry.setMapItem('ANTICOAGULATION_TEXTS', key, {
+            title,
+            text
+        });
+
+        state.anticoagulationKey = key;
+        state.anticoagulationMode = 'edit';
+        state.anticoagulationDraft = createAnticoagulationDraft(key);
+        A.runtime?.refreshMedicalCardAnticoagulationSelect?.();
+        renderAnticoagulationsTab();
+        setStatus(`Η αντιπηκτική αγωγή «${title}» αποθηκεύτηκε.`, 'success');
+    }
+
+    function deleteAnticoagulation() {
+        if (state.anticoagulationMode !== 'edit' || !state.anticoagulationKey) return;
+
+        const entry = createAnticoagulationDraft(state.anticoagulationKey);
+        if (!confirm(`Να αφαιρεθεί η αντιπηκτική αγωγή «${entry.title}»;`)) return;
+
+        A.registry.deleteMapItem(
+            'ANTICOAGULATION_TEXTS',
+            state.anticoagulationKey
+        );
+
+        const next = getAnticoagulationEntries()[0]?.key || '';
+        state.anticoagulationKey = next;
+        state.anticoagulationMode = next ? 'edit' : 'new';
+        state.anticoagulationDraft = createAnticoagulationDraft(next);
+        A.runtime?.refreshMedicalCardAnticoagulationSelect?.();
+        renderAnticoagulationsTab();
+        setStatus('Η αντιπηκτική αγωγή αφαιρέθηκε.', 'success');
+    }
+
+    function restoreAnticoagulation() {
+        if (!state.anticoagulationKey) return;
+
+        const factory = A.registry.getFactorySection('ANTICOAGULATION_TEXTS') || {};
+        if (!Object.prototype.hasOwnProperty.call(factory, state.anticoagulationKey)) {
+            setStatus('Η συγκεκριμένη αγωγή δεν έχει εργοστασιακή έκδοση.', 'warning');
+            return;
+        }
+
+        A.registry.restoreMapItem(
+            'ANTICOAGULATION_TEXTS',
+            state.anticoagulationKey
+        );
+
+        state.anticoagulationDraft = createAnticoagulationDraft(
+            state.anticoagulationKey
+        );
+        A.runtime?.refreshMedicalCardAnticoagulationSelect?.();
+        renderAnticoagulationsTab();
+        setStatus('Η αγωγή επανήλθε στην εργοστασιακή μορφή.', 'success');
+    }
+
+    function renderAnticoagulationsTab() {
+        const doc = getDocument();
+        const content = doc?.getElementById('asklipios-settings-content');
+        if (!doc || !content) return;
+
+        ensureStyle(doc);
+        ensureAnticoagulationSelection();
+
+        const entries = getAnticoagulationEntries();
+        const query = state.anticoagulationSearch
+            .trim()
+            .toLocaleLowerCase('el');
+        const visible = entries.filter(entry =>
+            !query || `${entry.title} ${entry.text}`
+                .toLocaleLowerCase('el')
+                .includes(query)
+        );
+
+        const mod = state.anticoagulationMode === 'edit'
+            ? getModificationState(
+                'ANTICOAGULATION_TEXTS',
+                state.anticoagulationKey
+            )
+            : { isFactory: false };
+
+        content.innerHTML = `
+            <div class="ask-clinical-grid">
+                <div class="ask-card">
+                    <div style="display:flex;gap:6px;">
+                        <button type="button" id="ask-new-anticoag" class="ask-btn ask-btn-primary">+ Νέα</button>
+                        <button type="button" id="ask-duplicate-anticoag" class="ask-btn">Αντιγραφή</button>
+                    </div>
+                    <input id="ask-anticoag-search" class="ask-input" placeholder="Αναζήτηση αντιπηκτικής" value="${escapeHtml(state.anticoagulationSearch)}" style="margin-top:8px;">
+                    <div class="ask-clinical-list">
+                        ${visible.length
+                            ? visible.map(entry => `
+                                <button type="button" class="ask-clinical-item ${state.anticoagulationMode === 'edit' && entry.key === state.anticoagulationKey ? 'active' : ''}" data-key="${escapeHtml(entry.key)}">
+                                    ${escapeHtml(entry.title)}
+                                </button>
+                            `).join('')
+                            : '<div class="ask-muted" style="padding:12px;">Δεν βρέθηκαν αντιπηκτικές αγωγές.</div>'}
+                    </div>
+                    <button type="button" id="ask-reset-anticoagulations" class="ask-btn ask-btn-danger" style="width:100%;margin-top:10px;">Επαναφορά όλων</button>
+                </div>
+
+                <div class="ask-card ask-template-editor">
+                    <div style="display:flex;gap:7px;flex-wrap:wrap;">
+                        <button type="button" id="ask-save-anticoag" class="ask-btn ask-btn-success">Αποθήκευση</button>
+                        <button type="button" id="ask-delete-anticoag" class="ask-btn ask-btn-danger" ${state.anticoagulationMode === 'new' ? 'disabled' : ''}>Διαγραφή</button>
+                        <button type="button" id="ask-restore-anticoag" class="ask-btn" ${state.anticoagulationMode === 'edit' && mod.isFactory ? '' : 'disabled'}>Επαναφορά εργοστασιακού</button>
+                    </div>
+
+                    <label class="ask-form-label" style="margin-top:12px;">Τίτλος στο dropdown</label>
+                    <input id="ask-anticoag-title" class="ask-input" value="${escapeHtml(state.anticoagulationDraft?.title || '')}" placeholder="π.χ. Clexane 4000">
+
+                    <label class="ask-form-label" style="margin-top:12px;">Κείμενο στις οδηγίες εξόδου</label>
+                    <textarea id="ask-anticoag-text" class="ask-input" style="min-height:180px;">${escapeHtml(state.anticoagulationDraft?.text || '')}</textarea>
+
+                    <div class="ask-muted" style="margin-top:10px;">
+                        Στο dropdown εμφανίζεται μόνο ο τίτλος. Το αναλυτικό κείμενο προστίθεται αποκλειστικά στις οδηγίες εξόδου.
+                    </div>
+                </div>
+            </div>
+        `;
+
+        content.querySelectorAll('.ask-clinical-item[data-key]').forEach(button => {
+            button.onclick = () => {
+                state.anticoagulationKey = button.dataset.key;
+                state.anticoagulationMode = 'edit';
+                state.anticoagulationDraft = createAnticoagulationDraft(
+                    state.anticoagulationKey
+                );
+                renderAnticoagulationsTab();
+            };
+        });
+
+        doc.getElementById('ask-anticoag-search').oninput = event => {
+            state.anticoagulationSearch = event.target.value;
+            renderAnticoagulationsTab();
+        };
+
+        doc.getElementById('ask-new-anticoag').onclick = () => {
+            state.anticoagulationKey = '';
+            state.anticoagulationMode = 'new';
+            state.anticoagulationDraft = createAnticoagulationDraft('');
+            renderAnticoagulationsTab();
+            doc.getElementById('ask-anticoag-title')?.focus();
+        };
+
+        doc.getElementById('ask-duplicate-anticoag').onclick = () => {
+            updateAnticoagulationDraftFromDom();
+            state.anticoagulationKey = '';
+            state.anticoagulationMode = 'new';
+            state.anticoagulationDraft = {
+                ...clone(state.anticoagulationDraft),
+                key: '',
+                title: `${state.anticoagulationDraft?.title || ''} - αντίγραφο`
+            };
+            renderAnticoagulationsTab();
+        };
+
+        doc.getElementById('ask-save-anticoag').onclick = () => {
+            try {
+                saveAnticoagulation();
+            } catch (error) {
+                setStatus(error.message, 'error');
+            }
+        };
+        doc.getElementById('ask-delete-anticoag').onclick = deleteAnticoagulation;
+        doc.getElementById('ask-restore-anticoag').onclick = restoreAnticoagulation;
+        doc.getElementById('ask-reset-anticoagulations').onclick = () => {
+            if (!confirm('Να διαγραφούν όλες οι τοπικές αλλαγές στις αντιπηκτικές αγωγές;')) return;
+            A.registry.resetSection('ANTICOAGULATION_TEXTS');
+            const first = getAnticoagulationEntries()[0]?.key || '';
+            state.anticoagulationKey = first;
+            state.anticoagulationMode = first ? 'edit' : 'new';
+            state.anticoagulationDraft = createAnticoagulationDraft(first);
+            A.runtime?.refreshMedicalCardAnticoagulationSelect?.();
+            renderAnticoagulationsTab();
+            setStatus('Οι αντιπηκτικές αγωγές επανήλθαν στις εργοστασιακές τιμές.', 'success');
+        };
+    }
+
     function refreshMedicalPresetSelect() {
         const doc = getDocument();
         const select = doc?.getElementById('mc-preset');
@@ -1739,12 +2028,14 @@
 
     function refreshRuntimeControls() {
         refreshMedicalPresetSelect();
+        A.runtime?.refreshMedicalCardAnticoagulationSelect?.();
         A.settingsUi.refresh();
     }
 
     A.settingsUi.registerTab('presets', renderPresetsTab);
     A.settingsUi.registerTab('surgery', renderSurgeryTab);
     A.settingsUi.registerTab('doctors', renderDoctorsTab);
+    A.settingsUi.registerTab('anticoagulations', renderAnticoagulationsTab);
 
     window.addEventListener('asklipios:data-changed', refreshRuntimeControls);
 
@@ -1752,12 +2043,13 @@
         refreshRuntimeControls,
         renderPresetsTab,
         renderSurgeryTab,
-        renderDoctorsTab
+        renderDoctorsTab,
+        renderAnticoagulationsTab
     };
 
     A.modules.clinicalSettingsUi = {
         loaded: true,
-        version: '0.11.0'
+        version: '0.12.0'
     };
 
     console.log('Asklipios clinical settings UI loaded');
