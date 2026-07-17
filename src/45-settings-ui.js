@@ -1,7 +1,7 @@
 /*
  * Asklipios — Settings UI
  *
- * Version 0.8.0
+ * Version 0.9.0
  *
  * Visible local editors for:
  * - Laboratory packages
@@ -37,6 +37,8 @@
         packageDraft: null,
         packageSearch: ''
     };
+
+    const externalTabRenderers = {};
 
     function clone(value) {
         return A.localData.clone(value);
@@ -620,59 +622,65 @@
                     </div>
                 </div>
 
-                <div class="ask-exam-tech">
-                    <label>
-                        test
-                        <input
-                            type="number"
-                            class="ask-exam-test"
-                            value="${normalized.test}"
-                        >
-                    </label>
+                <details class="ask-exam-advanced" style="margin-top:7px;">
+                    <summary style="cursor:pointer;color:#5d6d7e;font-size:12px;">
+                        Τεχνικά στοιχεία εξέτασης
+                    </summary>
 
-                    <label>
-                        hisCode
-                        <input
-                            type="number"
-                            class="ask-exam-his-code"
-                            value="${normalized.hisCode}"
-                        >
-                    </label>
+                    <div class="ask-exam-tech">
+                        <label>
+                            test
+                            <input
+                                type="number"
+                                class="ask-exam-test"
+                                value="${normalized.test}"
+                            >
+                        </label>
 
-                    <label>
-                        lab
-                        <input
-                            type="number"
-                            class="ask-exam-lab"
-                            value="${normalized.lab}"
-                        >
-                    </label>
+                        <label>
+                            hisCode
+                            <input
+                                type="number"
+                                class="ask-exam-his-code"
+                                value="${normalized.hisCode}"
+                            >
+                        </label>
 
-                    <label>
-                        dep
-                        <input
-                            type="number"
-                            class="ask-exam-dep"
-                            value="${normalized.dep}"
-                        >
-                    </label>
+                        <label>
+                            lab
+                            <input
+                                type="number"
+                                class="ask-exam-lab"
+                                value="${normalized.lab}"
+                            >
+                        </label>
 
-                    <label>
-                        Εργαστήριο
-                        <input
-                            class="ask-exam-lab-description"
-                            value="${escapeHtml(normalized.labDescr)}"
-                        >
-                    </label>
+                        <label>
+                            dep
+                            <input
+                                type="number"
+                                class="ask-exam-dep"
+                                value="${normalized.dep}"
+                            >
+                        </label>
 
-                    <label>
-                        Τμήμα
-                        <input
-                            class="ask-exam-dep-description"
-                            value="${escapeHtml(normalized.depDescr)}"
-                        >
-                    </label>
-                </div>
+                        <label>
+                            Εργαστήριο
+                            <input
+                                class="ask-exam-lab-description"
+                                value="${escapeHtml(normalized.labDescr)}"
+                            >
+                        </label>
+
+                        <label>
+                            Τμήμα
+                            <input
+                                class="ask-exam-dep-description"
+                                value="${escapeHtml(normalized.depDescr)}"
+                            >
+                        </label>
+                    </div>
+                </details>
             </div>
         `;
     }
@@ -2303,6 +2311,24 @@
             );
         });
 
+        const externalRenderer =
+            externalTabRenderers[state.activeTab];
+
+        if (typeof externalRenderer === 'function') {
+            externalRenderer({
+                document: doc,
+                content: doc?.getElementById(
+                    'asklipios-settings-content'
+                ),
+                setStatus,
+                refreshHelperControls,
+                escapeHtml,
+                clone,
+                sortedKeys
+            });
+            return;
+        }
+
         if (state.activeTab === 'labs') {
             renderLabsTab();
         } else if (state.activeTab === 'companies') {
@@ -2531,12 +2557,28 @@
     A.settingsUi = {
         open: openSettingsPanel,
         close: closeSettingsPanel,
-        refresh: refreshHelperControls
+        refresh: refreshHelperControls,
+        rerender: renderActiveTab,
+        setStatus,
+
+        registerTab(tabId, renderer) {
+            if (!tabId || typeof renderer !== 'function') {
+                throw new Error(
+                    'Invalid Asklipios settings tab renderer.'
+                );
+            }
+
+            externalTabRenderers[tabId] = renderer;
+
+            if (state.activeTab === tabId) {
+                renderActiveTab();
+            }
+        }
     };
 
     A.modules.settingsUi = {
         loaded: true,
-        version: '0.8.0'
+        version: '0.9.0'
     };
 
     startGearWatcher();
