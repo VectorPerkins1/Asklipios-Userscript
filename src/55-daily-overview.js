@@ -1,6 +1,6 @@
 /*
  * Asklipios — Daily Ward Overview
- * Version 0.13.2
+ * Version 0.13.3
  *
  * All-patient ward board with live Care data, persistent per-patient notes,
  * automatic 48-hour cleanup after a patient disappears from the ward plan,
@@ -19,7 +19,7 @@
 
     A.modules = A.modules || {};
 
-    const VERSION = '0.13.2';
+    const VERSION = '0.13.3';
     const OVERLAY_ID = 'asklipios-daily-overview';
     const STYLE_ID = 'asklipios-daily-overview-style';
     const STORAGE_KEY = 'asklipios.daily-overview.patient-data.v3';
@@ -383,39 +383,111 @@
         return age >= 0 && age <= 130 ? String(age) : '';
     }
 
-    function planAgeMetadata(row) {
-        const cells = [...row.querySelectorAll('td')];
+    function rowsLinkedToEncounter(encounterNr) {
+        const doc = getDocument();
+        if (!doc || !encounterNr) return [];
+        const id = String(encounterNr);
+        const rows = [];
+        const seen = new Set();
 
-        // Στο πλάνο του Care η ημερομηνία γέννησης και η υπολογισμένη ηλικία
-        // βρίσκονται στο ίδιο <td>. Η ηλικία είναι συνήθως σε nested maroon <div>,
-        // π.χ. «15/01/1935 <br> <div>91 ε 6 μ</div>».
-        const explicitAgeElement = [...row.querySelectorAll('td div, td span, td small')]
-            .find(element => ageYearsFromText(element.textContent || ''));
-
-        const birthAgeCell = explicitAgeElement?.closest('td')
-            || cells.find(cell => {
-                const text = String(cell.textContent || '');
-                return ageYearsFromText(text) && /(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/.test(text);
-            })
-            || null;
-
-        const explicitAge = ageYearsFromText(explicitAgeElement?.textContent || birthAgeCell?.textContent || '');
-        const birthDate = normalizeDate(birthAgeCell?.textContent || '');
-        const calculatedAge = explicitAge || ageYearsFromBirthDate(birthAgeCell?.textContent || '');
-        const admissionDate = normalizeDate(birthAgeCell?.previousElementSibling?.textContent || '');
-
-        return {
-            age: calculatedAge,
-            birthDate,
-            admissionDate
+        const addRow = row => {
+            if (!row || seen.has(row)) return;
+            seen.add(row);
+            rows.push(row);
         };
+
+        // Η γραμμή με το tdMiniColorBars δεν είναι πάντα η δημογραφική γραμμή.
+        // Στο πραγματικό πλάνο, το όνομα/ηλικία βρίσκεται συχνά σε γειτονική <tr>
+        // με links που περιέχουν fwd_nr=<encounterNr>.
+        [...doc.querySelectorAll('a[href]')].forEach(anchor => {
+            const href = String(anchor.getAttribute('href') || '');
+            let decoded = href;
+            try { decoded = decodeURIComponent(href); } catch { /* keep raw href */ }
+            if (
+                decoded.includes(`fwd_nr=${id}`)
+                || decoded.includes(`pn=${id}`)
+                || decoded.includes(`encounterNr=${id}`)
+            ) {
+                addRow(anchor.closest('tr'));
+            }
+        });
+
+        return rows;
+    }
+
+    function nearbyRows(baseRow, before = 2, after = 4) {
+        if (!baseRow) return [];
+        const rows = [baseRow];
+        let previous = baseRow.previousElementSibling;
+        for (let index = 0; previous && index < before; index += 1) {
+            if (previous.tagName === 'TR') rows.unshift(previous);
+            previous = previous.previousElementSibling;
+        }
+        let next = baseRow.nextElementSibling;
+        for (let index = 0; next && index < after; index += 1) {
+            if (next.tagName === 'TR') rows.push(next);
+            next = next.nextElementSibling;
+        }
+        return rows;
+    }
+
+    function extractAgeMetadataFromRows(rows) {
+        for (const row of rows) {
+            if (!row) continue;
+            const cells = [...row.querySelectorAll('td')];
+
+            const explicitAgeElement = [...row.querySelectorAll(
+                'td div, td span, td small, td font, td b, td strong, td p'
+            )].find(element => ageYearsFromText(element.textContent || ''));
+
+            const birthAgeCell = explicitAgeElement?.closest('td')
+                || cells.find(cell => {
+                    const text = String(cell.textContent || '');
+                    return Boolean(ageYearsFromText(text))
+                        && /(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/.test(text);
+                })
+                || null;
+
+            if (!birthAgeCell) continue;
+
+            const cellText = String(birthAgeCell.textContent || '');
+            const explicitAge = ageYearsFromText(explicitAgeElement?.textContent || cellText);
+            const birthDate = normalizeDate(cellText);
+            const calculatedAge = explicitAge || ageYearsFromBirthDate(cellText);
+            const admissionDate = normalizeDate(
+                birthAgeCell.previousElementSibling?.textContent || ''
+            );
+
+            if (calculatedAge || birthDate) {
+                return {
+                    age: calculatedAge,
+                    birthDate,
+                    admissionDate
+                };
+            }
+        }
+
+        return { age: '', birthDate: '', admissionDate: '' };
+    }
+
+    function planAgeMetadata(row, encounterNr) {
+        // 1) Πρώτα η πραγματική δημογραφική γραμμή που συνδέεται με fwd_nr.
+        const linkedRows = rowsLinkedToEncounter(encounterNr);
+        const linkedResult = extractAgeMetadataFromRows(linkedRows);
+        if (linkedResult.age || linkedResult.birthDate) return linkedResult;
+
+        // 2) Έπειτα η γραμμή του mini color bar και οι κοντινές της γραμμές.
+        const nearbyResult = extractAgeMetadataFromRows(nearbyRows(row));
+        if (nearbyResult.age || nearbyResult.birthDate) return nearbyResult;
+
+        return { age: '', birthDate: '', admissionDate: '' };
     }
 
     function planMetadata(encounterNr) {
         const row = planRowForEncounter(encounterNr);
         if (!row) return {};
 
-        const ageMeta = planAgeMetadata(row);
+        const ageMeta = planAgeMetadata(row, encounterNr);
 
         const titled = [...row.querySelectorAll('[title]')]
             .map(element => ({
