@@ -1,6 +1,6 @@
 /*
  * Asklipios — Daily Ward Overview
- * Version 0.13.1
+ * Version 0.13.2
  *
  * All-patient ward board with live Care data, persistent per-patient notes,
  * automatic 48-hour cleanup after a patient disappears from the ward plan,
@@ -19,7 +19,7 @@
 
     A.modules = A.modules || {};
 
-    const VERSION = '0.13.1';
+    const VERSION = '0.13.2';
     const OVERLAY_ID = 'asklipios-daily-overview';
     const STYLE_ID = 'asklipios-daily-overview-style';
     const STORAGE_KEY = 'asklipios.daily-overview.patient-data.v3';
@@ -350,14 +350,72 @@
         return doc?.getElementById(`tdMiniColorBars${encounterNr}`)?.closest('tr') || null;
     }
 
+    function ageYearsFromText(value) {
+        const text = String(value || '').replace(/\s+/g, ' ').trim();
+        const match = text.match(/(?:^|[^0-9])(\d{1,3})\s*(?:ε(?:τών)?|έτη|χρ(?:όνων)?)(?=$|[^\p{L}])/iu);
+        if (!match) return '';
+        const years = Number(match[1]);
+        return Number.isInteger(years) && years >= 0 && years <= 130 ? String(years) : '';
+    }
+
+    function ageYearsFromBirthDate(value, referenceDate = new Date()) {
+        const text = String(value || '');
+        const match = text.match(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/);
+        if (!match) return '';
+
+        const day = Number(match[1]);
+        const month = Number(match[2]);
+        const year = Number(match[3]);
+        const birthDate = new Date(year, month - 1, day);
+        if (
+            Number.isNaN(birthDate.getTime())
+            || birthDate.getFullYear() !== year
+            || birthDate.getMonth() !== month - 1
+            || birthDate.getDate() !== day
+            || birthDate > referenceDate
+        ) return '';
+
+        let age = referenceDate.getFullYear() - year;
+        const beforeBirthday =
+            referenceDate.getMonth() < month - 1
+            || (referenceDate.getMonth() === month - 1 && referenceDate.getDate() < day);
+        if (beforeBirthday) age -= 1;
+        return age >= 0 && age <= 130 ? String(age) : '';
+    }
+
+    function planAgeMetadata(row) {
+        const cells = [...row.querySelectorAll('td')];
+
+        // Στο πλάνο του Care η ημερομηνία γέννησης και η υπολογισμένη ηλικία
+        // βρίσκονται στο ίδιο <td>. Η ηλικία είναι συνήθως σε nested maroon <div>,
+        // π.χ. «15/01/1935 <br> <div>91 ε 6 μ</div>».
+        const explicitAgeElement = [...row.querySelectorAll('td div, td span, td small')]
+            .find(element => ageYearsFromText(element.textContent || ''));
+
+        const birthAgeCell = explicitAgeElement?.closest('td')
+            || cells.find(cell => {
+                const text = String(cell.textContent || '');
+                return ageYearsFromText(text) && /(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/.test(text);
+            })
+            || null;
+
+        const explicitAge = ageYearsFromText(explicitAgeElement?.textContent || birthAgeCell?.textContent || '');
+        const birthDate = normalizeDate(birthAgeCell?.textContent || '');
+        const calculatedAge = explicitAge || ageYearsFromBirthDate(birthAgeCell?.textContent || '');
+        const admissionDate = normalizeDate(birthAgeCell?.previousElementSibling?.textContent || '');
+
+        return {
+            age: calculatedAge,
+            birthDate,
+            admissionDate
+        };
+    }
+
     function planMetadata(encounterNr) {
         const row = planRowForEncounter(encounterNr);
         if (!row) return {};
 
-        const cells = [...row.querySelectorAll('td')];
-        const ageCell = cells.find(cell => /\b\d{1,3}\s*ετών\b/i.test(cell.textContent || ''));
-        const ageMatch = String(ageCell?.textContent || '').match(/\b(\d{1,3})\s*ετών\b/i);
-        const admissionDate = normalizeDate(ageCell?.previousElementSibling?.textContent || '');
+        const ageMeta = planAgeMetadata(row);
 
         const titled = [...row.querySelectorAll('[title]')]
             .map(element => ({
@@ -382,8 +440,9 @@
         const parsedAdmission = parsePlanLabel(admission?.text || '');
 
         return {
-            age: ageMatch?.[1] || '',
-            admissionDate,
+            age: ageMeta.age,
+            birthDate: ageMeta.birthDate,
+            admissionDate: ageMeta.admissionDate,
             incident: parsedIncident.label,
             doctor: parsedIncident.doctor || parsedAdmission.doctor
         };
@@ -852,7 +911,7 @@
 
     function extractPatientDetails(doc) {
         const bodyText = String(doc.body?.textContent || '').replace(/\s+/g, ' ');
-        const ageMatch = bodyText.match(/\b(\d{1,3})\s*(?:ετών|έτη)\b/i);
+        const age = ageYearsFromText(bodyText);
         let incident = findValueByLabels(doc, [
             'κύρια διάγνωση',
             'διάγνωση εισαγωγής',
@@ -865,7 +924,7 @@
             incident = icdText?.[0]?.trim() || '';
         }
         return {
-            age: ageMatch?.[1] || '',
+            age,
             admissionDate: normalizeDate(findValueByLabels(doc, [
                 'ημερομηνία εισαγωγής',
                 'ημ/νία εισαγωγής',
