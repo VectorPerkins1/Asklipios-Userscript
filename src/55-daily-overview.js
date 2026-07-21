@@ -1,10 +1,10 @@
 /*
  * Asklipios — Daily Ward Overview
- * Version 0.13.3
+ * Version 0.14.0
  *
  * All-patient ward board with live Care data, persistent per-patient notes,
  * automatic 48-hour cleanup after a patient disappears from the ward plan,
- * and compact portrait-A4 printing.
+ * two-point laboratory comparisons, reliable age fallback, and compact portrait-A4 printing.
  */
 
 (function () {
@@ -19,24 +19,27 @@
 
     A.modules = A.modules || {};
 
-    const VERSION = '0.13.3';
+    const VERSION = '0.14.0';
     const OVERLAY_ID = 'asklipios-daily-overview';
     const STYLE_ID = 'asklipios-daily-overview-style';
-    const STORAGE_KEY = 'asklipios.daily-overview.patient-data.v3';
-    const PREVIOUS_STORAGE_KEY = 'asklipios.daily-overview.patient-data.v2';
+    const STORAGE_KEY = 'asklipios.daily-overview.patient-data.v4';
+    const PREVIOUS_STORAGE_KEYS = [
+        'asklipios.daily-overview.patient-data.v3',
+        'asklipios.daily-overview.patient-data.v2'
+    ];
     const LEGACY_STORAGE_PREFIX = 'asklipios.daily-overview.v1';
     const MISSING_PATIENT_TTL_MS = 48 * 60 * 60 * 1000;
     const REFRESH_DELAY_MS = 110;
 
     const LAB_TARGETS = [
-        { key: 'Hgb', aliases: ['HGB', 'HB', 'ΑΙΜΟΣΦΑΙΡΙΝΗ'] },
-        { key: 'PLTs', aliases: ['PLT', 'PLTS', 'PLATELETS', 'ΑΙΜΟΠΕΤΑΛΙΑ'] },
-        { key: 'Ur', aliases: ['UREA', 'ΟΥΡΙΑ'] },
-        { key: 'Cr', aliases: ['CREATININE', 'CREAT', 'ΚΡΕΑΤΙΝΙΝΗ'] },
-        { key: 'Na', aliases: ['NA', 'SODIUM', 'ΝΑΤΡΙΟ'] },
-        { key: 'K', aliases: ['K', 'POTASSIUM', 'ΚΑΛΙΟ'] },
-        { key: 'SGOT', aliases: ['SGOT', 'AST'] },
-        { key: 'SGPT', aliases: ['SGPT', 'ALT'] }
+        { key: 'Hgb', subnames: ['HGB'], aliases: ['HGB', 'HB', 'ΑΙΜΟΣΦΑΙΡΙΝΗ'] },
+        { key: 'PLTs', subnames: ['PLT'], aliases: ['PLT', 'PLTS', 'PLATELETS', 'ΑΙΜΟΠΕΤΑΛΙΑ'] },
+        { key: 'Ur', subnames: ['ΟΥΡΙΑ ΑΙΜ', 'UREA'], aliases: ['UREA', 'ΟΥΡΙΑ ΑΙΜ', 'ΟΥΡΙΑ'] },
+        { key: 'Cr', subnames: ['ΚΡΕΑΤΙ ΑΙΜ', 'CREATININE'], aliases: ['CREATININE', 'CREAT', 'ΚΡΕΑΤΙ ΑΙΜ', 'ΚΡΕΑΤΙΝΙΝΗ'] },
+        { key: 'Na', subnames: ['ΝΑΤΡΙΟ', 'NA'], aliases: ['NA', 'SODIUM', 'ΝΑΤΡΙΟ'] },
+        { key: 'K', subnames: ['Κ', 'K'], aliases: ['K', 'POTASSIUM', 'ΚΑΛΙΟ'] },
+        { key: 'SGOT', subnames: ['SGOT/AST', 'SGOT', 'AST'], aliases: ['SGOT', 'AST'] },
+        { key: 'SGPT', subnames: ['SGPT', 'ALT/SGPT', 'ALT'], aliases: ['SGPT', 'ALT'] }
     ];
 
     const COMORBIDITY_OPTIONS = [
@@ -177,10 +180,16 @@
             let raw;
             if (typeof GM_getValue === 'function') {
                 raw = GM_getValue(STORAGE_KEY, null);
-                if (!raw) raw = GM_getValue(PREVIOUS_STORAGE_KEY, null);
+                for (const key of PREVIOUS_STORAGE_KEYS) {
+                    if (raw) break;
+                    raw = GM_getValue(key, null);
+                }
             } else {
-                raw = window.localStorage.getItem(STORAGE_KEY)
-                    || window.localStorage.getItem(PREVIOUS_STORAGE_KEY);
+                raw = window.localStorage.getItem(STORAGE_KEY);
+                for (const key of PREVIOUS_STORAGE_KEYS) {
+                    if (raw) break;
+                    raw = window.localStorage.getItem(key);
+                }
             }
             if (!raw) return null;
             return typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -204,7 +213,7 @@
 
     function createState() {
         return {
-            schemaVersion: 3,
+            schemaVersion: 4,
             updatedAt: null,
             patients: {},
             dailyNotes: {}
@@ -240,18 +249,43 @@
         return [...new Set(source.map(item => String(item).trim()).filter(Boolean))];
     }
 
-    function normalizeLabs(value) {
-        if (!value) return {};
-        if (typeof value === 'object' && !Array.isArray(value)) {
-            const result = {};
-            LAB_TARGETS.forEach(target => {
-                if (value[target.key] !== undefined && value[target.key] !== null) {
-                    result[target.key] = String(value[target.key]).trim();
-                }
-            });
-            return result;
+    function normalizeLabPoint(value) {
+        if (!value || typeof value !== 'object') return null;
+        const date = normalizeDate(value.date);
+        const rawValue = String(value.value ?? '').trim();
+        if (!rawValue) return null;
+        return { date, value: rawValue };
+    }
+
+    function normalizeLabEntry(value) {
+        if (value === undefined || value === null || value === '') return null;
+        if (typeof value !== 'object' || Array.isArray(value)) {
+            return {
+                latest: { date: '', value: String(value).trim() },
+                previous: null,
+                trend: '',
+                unit: ''
+            };
         }
-        return {};
+        const latest = normalizeLabPoint(value.latest);
+        if (!latest) return null;
+        const previous = normalizeLabPoint(value.previous);
+        return {
+            latest,
+            previous,
+            trend: ['up', 'down', 'same'].includes(value.trend) ? value.trend : '',
+            unit: String(value.unit || '').trim()
+        };
+    }
+
+    function normalizeLabs(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+        const result = {};
+        LAB_TARGETS.forEach(target => {
+            const entry = normalizeLabEntry(value[target.key]);
+            if (entry) result[target.key] = entry;
+        });
+        return result;
     }
 
     function normalizePatientData(value = {}) {
@@ -282,11 +316,10 @@
     function normalizeState(raw) {
         const result = createState();
         if (!raw || typeof raw !== 'object') return result;
-        const dropLegacyLabs = Number(raw.schemaVersion || 0) < 3;
         Object.entries(raw.patients || {}).forEach(([key, value]) => {
             const patient = normalizePatientData({
                 ...value,
-                labs: dropLegacyLabs ? {} : value?.labs
+                labs: value?.labs
             });
             patient.encounterNr = patient.encounterNr || String(key);
             result.patients[String(key)] = patient;
@@ -352,10 +385,17 @@
 
     function ageYearsFromText(value) {
         const text = String(value || '').replace(/\s+/g, ' ').trim();
-        const match = text.match(/(?:^|[^0-9])(\d{1,3})\s*(?:ε(?:τών)?|έτη|χρ(?:όνων)?)(?=$|[^\p{L}])/iu);
-        if (!match) return '';
-        const years = Number(match[1]);
-        return Number.isInteger(years) && years >= 0 && years <= 130 ? String(years) : '';
+        const patterns = [
+            /(?:^|[^0-9])(\d{1,3})\s*(?:ε(?:τών)?|έτη|χρ(?:όνων)?)(?=$|[^\p{L}])/iu,
+            /(?:^|[^0-9])(\d{1,3})\s*(?:years?|yrs?)(?=$|[^a-z])/iu
+        ];
+        for (const pattern of patterns) {
+            const match = text.match(pattern);
+            if (!match) continue;
+            const years = Number(match[1]);
+            if (Number.isInteger(years) && years >= 0 && years <= 130) return String(years);
+        }
+        return '';
     }
 
     function ageYearsFromBirthDate(value, referenceDate = new Date()) {
@@ -383,39 +423,74 @@
         return age >= 0 && age <= 130 ? String(age) : '';
     }
 
+    function dateMatches(value) {
+        return [...String(value || '').matchAll(/(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/g)]
+            .map(match => normalizeDate(match[0]))
+            .filter(Boolean);
+    }
+
+    function patientNameTokens(value) {
+        return normalizeText(value)
+            .replace(/[^A-ZΑ-Ω0-9 ]/g, ' ')
+            .split(/\s+/)
+            .filter(token => token.length > 1);
+    }
+
     function rowsLinkedToEncounter(encounterNr) {
         const doc = getDocument();
         if (!doc || !encounterNr) return [];
         const id = String(encounterNr);
         const rows = [];
         const seen = new Set();
-
         const addRow = row => {
             if (!row || seen.has(row)) return;
             seen.add(row);
             rows.push(row);
         };
 
-        // Η γραμμή με το tdMiniColorBars δεν είναι πάντα η δημογραφική γραμμή.
-        // Στο πραγματικό πλάνο, το όνομα/ηλικία βρίσκεται συχνά σε γειτονική <tr>
-        // με links που περιέχουν fwd_nr=<encounterNr>.
-        [...doc.querySelectorAll('a[href]')].forEach(anchor => {
-            const href = String(anchor.getAttribute('href') || '');
-            let decoded = href;
-            try { decoded = decodeURIComponent(href); } catch { /* keep raw href */ }
+        [...doc.querySelectorAll('a[href], [onclick], [id], input[value]')].forEach(element => {
+            const haystack = [
+                element.getAttribute?.('href'),
+                element.getAttribute?.('onclick'),
+                element.id,
+                element.value
+            ].filter(Boolean).join(' ');
+            let decoded = haystack;
+            try { decoded = decodeURIComponent(haystack); } catch { /* keep raw value */ }
             if (
                 decoded.includes(`fwd_nr=${id}`)
                 || decoded.includes(`pn=${id}`)
                 || decoded.includes(`encounterNr=${id}`)
-            ) {
-                addRow(anchor.closest('tr'));
-            }
+                || decoded.includes(`getinfo(${id})`)
+                || decoded.includes(id)
+            ) addRow(element.closest('tr'));
         });
-
         return rows;
     }
 
-    function nearbyRows(baseRow, before = 2, after = 4) {
+    function rowsMatchingPatientName(patient) {
+        const doc = getDocument();
+        if (!doc) return [];
+        const tokens = patientNameTokens(patient?.name || patient?.patientName || '');
+        if (!tokens.length) return [];
+        const roomBed = `${String(patient?.room || '').trim()}/${String(patient?.bed || '').trim()}`;
+        const matches = [];
+        [...doc.querySelectorAll('tr')].forEach(row => {
+            const rowText = normalizeText(row.textContent || '');
+            if (!tokens.every(token => rowText.includes(token))) return;
+            const hasDate = /(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/.test(row.textContent || '');
+            const roomMatch = roomBed !== '/' && rowText.includes(normalizeText(roomBed));
+            const anchorText = normalizeText([...row.querySelectorAll('a')]
+                .map(anchor => anchor.textContent || '')
+                .join(' '));
+            if (hasDate || roomMatch || tokens.every(token => anchorText.includes(token))) {
+                matches.push(row);
+            }
+        });
+        return matches;
+    }
+
+    function nearbyRows(baseRow, before = 3, after = 5) {
         if (!baseRow) return [];
         const rows = [baseRow];
         let previous = baseRow.previousElementSibling;
@@ -431,63 +506,69 @@
         return rows;
     }
 
+    function uniqueRows(rows) {
+        const seen = new Set();
+        return rows.filter(row => row && !seen.has(row) && seen.add(row));
+    }
+
     function extractAgeMetadataFromRows(rows) {
-        for (const row of rows) {
-            if (!row) continue;
-            const cells = [...row.querySelectorAll('td')];
+        const currentYear = new Date().getFullYear();
+        for (const row of uniqueRows(rows)) {
+            const cells = [...row.querySelectorAll(':scope > td, :scope > th')];
+            const usableCells = cells.length ? cells : [...row.querySelectorAll('td, th')];
+            for (let index = 0; index < usableCells.length; index += 1) {
+                const cell = usableCells[index];
+                const text = String(cell.textContent || '').replace(/\s+/g, ' ').trim();
+                const explicitAge = ageYearsFromText(text);
+                const dates = dateMatches(text);
+                const birthDate = dates.find(date => Number(date.slice(0, 4)) <= currentYear - 1) || '';
+                if (!explicitAge && !birthDate) continue;
 
-            const explicitAgeElement = [...row.querySelectorAll(
-                'td div, td span, td small, td font, td b, td strong, td p'
-            )].find(element => ageYearsFromText(element.textContent || ''));
-
-            const birthAgeCell = explicitAgeElement?.closest('td')
-                || cells.find(cell => {
-                    const text = String(cell.textContent || '');
-                    return Boolean(ageYearsFromText(text))
-                        && /(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})/.test(text);
-                })
-                || null;
-
-            if (!birthAgeCell) continue;
-
-            const cellText = String(birthAgeCell.textContent || '');
-            const explicitAge = ageYearsFromText(explicitAgeElement?.textContent || cellText);
-            const birthDate = normalizeDate(cellText);
-            const calculatedAge = explicitAge || ageYearsFromBirthDate(cellText);
-            const admissionDate = normalizeDate(
-                birthAgeCell.previousElementSibling?.textContent || ''
-            );
-
-            if (calculatedAge || birthDate) {
-                return {
-                    age: calculatedAge,
-                    birthDate,
-                    admissionDate
-                };
+                const age = explicitAge || ageYearsFromBirthDate(birthDate);
+                let admissionDate = '';
+                const previousText = String(usableCells[index - 1]?.textContent || '');
+                const previousDates = dateMatches(previousText);
+                admissionDate = previousDates.find(date => date !== birthDate) || '';
+                if (!admissionDate) {
+                    const rowDates = dateMatches(row.textContent || '');
+                    admissionDate = rowDates.find(date => date !== birthDate && Number(date.slice(0, 4)) >= currentYear - 2) || '';
+                }
+                return { age, birthDate, admissionDate };
             }
         }
-
         return { age: '', birthDate: '', admissionDate: '' };
     }
 
-    function planAgeMetadata(row, encounterNr) {
-        // 1) Πρώτα η πραγματική δημογραφική γραμμή που συνδέεται με fwd_nr.
-        const linkedRows = rowsLinkedToEncounter(encounterNr);
-        const linkedResult = extractAgeMetadataFromRows(linkedRows);
-        if (linkedResult.age || linkedResult.birthDate) return linkedResult;
-
-        // 2) Έπειτα η γραμμή του mini color bar και οι κοντινές της γραμμές.
-        const nearbyResult = extractAgeMetadataFromRows(nearbyRows(row));
-        if (nearbyResult.age || nearbyResult.birthDate) return nearbyResult;
-
-        return { age: '', birthDate: '', admissionDate: '' };
+    function patientPlanRows(patient, baseRow = null) {
+        return uniqueRows([
+            ...rowsMatchingPatientName(patient),
+            ...rowsLinkedToEncounter(patient?.encounterNr),
+            ...nearbyRows(baseRow)
+        ]);
     }
 
-    function planMetadata(encounterNr) {
+    function planAgeMetadata(patient, row) {
+        return extractAgeMetadataFromRows(patientPlanRows(patient, row));
+    }
+
+    function admissionHrefFromPlan(patient) {
+        for (const row of patientPlanRows(patient, planRowForEncounter(patient?.encounterNr))) {
+            const link = [...row.querySelectorAll('a[href]')].find(anchor =>
+                /aufnahme_pass\.php/i.test(anchor.getAttribute('href') || '')
+            );
+            if (link) {
+                try { return new URL(link.getAttribute('href'), window.location.origin).href; }
+                catch { return ''; }
+            }
+        }
+        return '';
+    }
+
+    function planMetadata(patient) {
+        const encounterNr = String(patient?.encounterNr || '');
         const row = planRowForEncounter(encounterNr);
         if (!row) return {};
-
-        const ageMeta = planAgeMetadata(row, encounterNr);
+        const ageMeta = planAgeMetadata(patient, row);
 
         const titled = [...row.querySelectorAll('[title]')]
             .map(element => ({
@@ -496,7 +577,6 @@
                 text: String(element.textContent || '').replace(/\s+/g, ' ').trim()
             }))
             .filter(item => item.text);
-
         const diagnosisCandidates = titled.filter(item =>
             item.title.includes('ΔΙΑΓΝΩΣ') && !item.title.includes('ΑΝΑΖΗΤ')
         );
@@ -504,7 +584,6 @@
             item.title.includes('ΑΙΤΙΑ ΕΙΣΑΓΩΓΗΣ')
             || item.title.includes('ΔΙΑΓΝΩΣΗ ΕΙΣΑΓΩΓΗΣ')
         );
-
         const diagnosis = diagnosisCandidates.at(-1) || null;
         const admission = admissionCandidates.at(-1) || null;
         const incidentSource = diagnosis || admission;
@@ -516,7 +595,8 @@
             birthDate: ageMeta.birthDate,
             admissionDate: ageMeta.admissionDate,
             incident: parsedIncident.label,
-            doctor: parsedIncident.doctor || parsedAdmission.doctor
+            doctor: parsedIncident.doctor || parsedAdmission.doctor,
+            admissionHref: admissionHrefFromPlan(patient)
         };
     }
 
@@ -524,15 +604,15 @@
         return (A.runtime.getAllPatients?.() || [])
             .map(patient => {
                 const encounterNr = String(patient.encounterNr || '');
-                const meta = planMetadata(encounterNr);
-                return {
+                const normalizedPatient = {
                     ...patient,
-                    ...meta,
                     encounterNr,
                     room: String(patient.room || ''),
                     bed: String(patient.bed || ''),
                     name: String(patient.name || patient.patientName || '')
                 };
+                const meta = planMetadata(normalizedPatient);
+                return { ...normalizedPatient, ...meta };
             })
             .filter(patient => patient.encounterNr);
     }
@@ -619,6 +699,9 @@
             #${OVERLAY_ID} .do-postop{display:inline-block;margin-top:5px;padding:3px 6px;border-radius:12px;background:#e6f4ea;color:#26743b;font-size:10px;font-weight:700}
             #${OVERLAY_ID} .do-lab-grid{display:flex;flex-wrap:wrap;gap:4px}
             #${OVERLAY_ID} .do-lab-chip{border:1px solid #d5dee7;border-radius:4px;background:#f8fafc;padding:3px 5px;white-space:nowrap;font-size:10px}
+            #${OVERLAY_ID} .do-lab-chip.do-trend-up{border-left:3px solid #2474c6}
+            #${OVERLAY_ID} .do-lab-chip.do-trend-down{border-left:3px solid #d97706}
+            #${OVERLAY_ID} .do-lab-chip.do-trend-same{border-left:3px solid #7b8794}
             #${OVERLAY_ID} .do-empty{color:#9aa6b2;font-size:11px}
             #${OVERLAY_ID} select,#${OVERLAY_ID} input,#${OVERLAY_ID} textarea{font:inherit;border:1px solid #b9c6d3;border-radius:4px;background:#fff;padding:5px 6px;max-width:100%}
             #${OVERLAY_ID} .do-inline{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
@@ -655,10 +738,43 @@
         `).join('');
     }
 
+    function formatLabDisplayValue(value) {
+        const text = String(value ?? '').trim();
+        if (!text) return '';
+        if (/^-?\d+(?:\.\d+)?$/.test(text)) {
+            const number = Number(text);
+            return Number.isFinite(number)
+                ? number.toLocaleString('el-GR', { maximumFractionDigits: 2 })
+                : text.replace('.', ',');
+        }
+        return text.replace('.', ',');
+    }
+
+    function labComparisonText(entry) {
+        if (!entry?.latest?.value) return '';
+        const latest = formatLabDisplayValue(entry.latest.value);
+        if (!entry.previous?.value) return latest;
+        const previous = formatLabDisplayValue(entry.previous.value);
+        const symbol = entry.trend === 'up' ? '↑' : entry.trend === 'down' ? '↓' : '→';
+        return `${previous} → ${latest} ${symbol}`;
+    }
+
+    function labComparisonTitle(entry) {
+        if (!entry?.latest) return '';
+        const parts = [];
+        if (entry.previous?.date) parts.push(`${formatGreekDate(entry.previous.date)}: ${formatLabDisplayValue(entry.previous.value)}`);
+        if (entry.latest?.date) parts.push(`${formatGreekDate(entry.latest.date)}: ${formatLabDisplayValue(entry.latest.value)}`);
+        if (entry.unit) parts.push(entry.unit);
+        return parts.join(' · ');
+    }
+
     function labsHtml(labs) {
         const values = LAB_TARGETS
-            .filter(target => labs?.[target.key])
-            .map(target => `<span class="do-lab-chip"><b>${target.key}</b> ${escapeHtml(labs[target.key])}</span>`);
+            .filter(target => labs?.[target.key]?.latest?.value)
+            .map(target => {
+                const entry = labs[target.key];
+                return `<span class="do-lab-chip do-trend-${escapeHtml(entry.trend || 'none')}" title="${escapeHtml(labComparisonTitle(entry))}"><b>${target.key}</b> ${escapeHtml(labComparisonText(entry))}</span>`;
+            });
         return values.length
             ? `<div class="do-lab-grid">${values.join('')}</div>`
             : '<span class="do-empty">—</span>';
@@ -941,11 +1057,22 @@
     }
 
     function patientInfoUrl(patient) {
+        const [year, month, day] = todayIso().split('-');
         const url = new URL('/modules/nursing/nursing-station-patient-informational.php', window.location.origin);
-        url.searchParams.set('lang', 'gr');
-        url.searchParams.set('pn', patient.encounterNr);
-        url.searchParams.set('ward_nr', getWardNumber());
-        url.searchParams.set('station', 'Ορθοπαιδική');
+        const params = {
+            lang: 'gr',
+            pn: patient.encounterNr,
+            ward_nr: getWardNumber(),
+            station: 'Ορθοπαιδική',
+            rm: patient.room || '',
+            bd: patient.bed || '',
+            pyear: year,
+            pmonth: month,
+            pday: day,
+            released: '1',
+            lock: '1'
+        };
+        Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
         return url.href;
     }
 
@@ -1017,85 +1144,82 @@
         };
     }
 
-    function looksLikeNumericResult(text) {
-        const value = String(text || '').trim();
-        if (!value || /\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}/.test(value)) return false;
-        return /^[<>]?\s*-?\d+(?:[.,]\d+)?(?:\s*[A-Za-zΑ-Ωα-ω%/^0-9µμ.-]+)?$/.test(value);
-    }
-
-    function targetForText(text) {
-        const normalized = normalizeText(text)
-            .replace(/[()\[\]:]/g, ' ')
-            .replace(/\s+/g, ' ');
+    function targetForLabElement(element) {
+        const subname = normalizeText(element?.getAttribute('data-subname') || '');
+        const rowText = normalizeText(element?.closest('tr')?.textContent || '');
         for (const target of LAB_TARGETS) {
-            for (const alias of target.aliases) {
+            if (target.subnames.some(name => subname === normalizeText(name))) return target;
+            if (target.aliases.some(alias => {
                 const normalizedAlias = normalizeText(alias);
-                if (normalizedAlias.length <= 2) {
-                    const tokens = normalized.split(/[^A-ZΑ-Ω0-9]+/).filter(Boolean);
-                    if (tokens.includes(normalizedAlias)) return target;
-                } else if (normalized.includes(normalizedAlias)) {
-                    return target;
-                }
-            }
+                return normalizedAlias.length > 2 && rowText.includes(normalizedAlias);
+            })) return target;
         }
         return null;
     }
 
-    function extractValueFromRow(cells, aliasIndex) {
-        const ordered = [
-            ...cells.slice(aliasIndex + 1),
-            ...cells.slice(0, aliasIndex)
-        ];
-        for (const cell of ordered) {
-            const text = String(cell.textContent || '').replace(/\s+/g, ' ').trim();
-            const directPieces = text.split(/\s{2,}|\||;/).map(item => item.trim()).filter(Boolean);
-            for (const piece of directPieces) {
-                if (looksLikeNumericResult(piece)) return piece.replace(',', '.');
-            }
-            const match = text.match(/[<>]?\s*-?\d+(?:[.,]\d+)?/);
-            if (match && !/\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}/.test(text)) {
-                return match[0].replace(/\s+/g, '').replace(',', '.');
-            }
+    function parseLabSeries(raw) {
+        const series = [];
+        const regex = /\[\s*['"](\d{4}-\d{2}-\d{2})['"]\s*,\s*(['"]?)(-?\d+(?:[.,]\d+)?|[^\],]+?)\2\s*\]/g;
+        let match;
+        while ((match = regex.exec(String(raw || ''))) !== null) {
+            const date = normalizeDate(match[1]);
+            const value = String(match[3] || '').trim().replace(',', '.');
+            if (date && value) series.push({ date, value });
         }
-        return '';
+        const unique = new Map();
+        series.forEach(point => {
+            if (!unique.has(point.date)) unique.set(point.date, point);
+        });
+        return [...unique.values()].sort((a, b) => b.date.localeCompare(a.date));
     }
 
-    function extractTargetLabs(doc) {
-        const results = {};
-        const rows = [...doc.querySelectorAll('tr')];
-        for (const row of rows) {
-            const cells = [...row.querySelectorAll('th, td')];
-            if (!cells.length) continue;
-            let target = null;
-            let aliasIndex = -1;
-            for (let index = 0; index < cells.length; index++) {
-                target = targetForText(cells[index].textContent || '');
-                if (target) {
-                    aliasIndex = index;
-                    break;
-                }
-            }
-            if (!target || results[target.key]) continue;
-            const value = extractValueFromRow(cells, aliasIndex);
-            if (value) results[target.key] = value;
-        }
+    function labTrend(latest, previous) {
+        if (!latest || !previous) return '';
+        const current = Number(String(latest.value).replace(',', '.'));
+        const old = Number(String(previous.value).replace(',', '.'));
+        if (!Number.isFinite(current) || !Number.isFinite(old)) return '';
+        if (current > old) return 'up';
+        if (current < old) return 'down';
+        return 'same';
+    }
 
-        if (Object.keys(results).length < LAB_TARGETS.length) {
-            const text = String(doc.body?.innerText || '').replace(/\u00a0/g, ' ');
-            LAB_TARGETS.forEach(target => {
-                if (results[target.key]) return;
-                for (const alias of target.aliases) {
-                    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                    const regex = new RegExp(`(?:^|\\s)${escaped}[^\\n\\r]{0,80}?([<>]?\\s*-?\\d+(?:[.,]\\d+)?)`, 'im');
-                    const match = text.match(regex);
-                    if (match) {
-                        results[target.key] = match[1].replace(/\s+/g, '').replace(',', '.');
-                        break;
-                    }
-                }
-            });
+    function extractComparedLabs(doc) {
+        const results = {};
+        const scope = doc.querySelector('#lab_results') || doc;
+        const elements = [...scope.querySelectorAll('[data-subname][data-values]')];
+        for (const element of elements) {
+            const target = targetForLabElement(element);
+            if (!target || results[target.key]) continue;
+            const series = parseLabSeries(element.getAttribute('data-values'));
+            if (!series.length) continue;
+            const latest = series[0];
+            const previous = series[1] || null;
+            results[target.key] = {
+                latest,
+                previous,
+                trend: labTrend(latest, previous),
+                unit: String(element.getAttribute('data-mm') || '').replace(/\s+/g, ' ').trim()
+            };
         }
         return results;
+    }
+
+    function extractAgeFromAdmissionDocument(doc) {
+        const bodyText = String(doc.body?.textContent || '').replace(/\s+/g, ' ');
+        const explicit = ageYearsFromText(bodyText);
+        if (explicit) return explicit;
+        const birthText = findValueByLabels(doc, [
+            'ημερομηνία γέννησης',
+            'ημ/νία γέννησης',
+            'γέννηση',
+            'date of birth'
+        ]);
+        const calculated = ageYearsFromBirthDate(birthText);
+        if (calculated) return calculated;
+        const dates = dateMatches(bodyText)
+            .filter(date => Number(date.slice(0, 4)) <= new Date().getFullYear() - 1)
+            .sort();
+        return dates.length ? ageYearsFromBirthDate(dates[0]) : '';
     }
 
     async function discoverSurgeryDate(infoDoc) {
@@ -1129,27 +1253,73 @@
     async function fetchPatientSnapshot(patient) {
         const infoDoc = await fetchHtml(patientInfoUrl(patient));
         const details = extractPatientDetails(infoDoc);
+        const labs = extractComparedLabs(infoDoc);
         if (!details.surgeryDate) {
             details.surgeryDate = await discoverSurgeryDate(infoDoc);
         }
-        let labs = null;
-        try {
-            const labDoc = await fetchHtml(patientLabUrl(patient));
-            labs = extractTargetLabs(labDoc);
-        } catch (error) {
-            console.warn(`Daily overview labs ${patient.encounterNr}:`, error);
+        if (!details.age) {
+            const admissionHref = patient.admissionHref || admissionHrefFromPlan(patient);
+            if (admissionHref) {
+                try {
+                    const admissionDoc = await fetchHtml(admissionHref);
+                    details.age = extractAgeFromAdmissionDocument(admissionDoc);
+                } catch (error) {
+                    console.warn(`Daily overview age ${patient.encounterNr}:`, error);
+                }
+            }
         }
         return { ...details, labs };
+    }
+
+    async function runWithConcurrency(items, limit, worker) {
+        let cursor = 0;
+        const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+            while (cursor < items.length) {
+                const index = cursor++;
+                await worker(items[index], index);
+            }
+        });
+        await Promise.all(runners);
     }
 
     async function refreshFromCare() {
         const doc = getDocument();
         const overlay = doc?.getElementById(OVERLAY_ID);
         const status = overlay?.querySelector('.do-status');
-        if (status) status.textContent = 'Ανάγνωση του τρέχοντος πλάνου...';
-        syncPatients();
+        const patients = syncPatients();
         render();
-        if (status) status.textContent = 'Η ενημέρωση από το πλάνο ολοκληρώθηκε.';
+        if (!patients.length) {
+            if (status) status.textContent = 'Δεν βρέθηκαν ασθενείς.';
+            return;
+        }
+
+        let completed = 0;
+        if (status) status.textContent = `Ανάγνωση Care 0/${patients.length}...`;
+        await runWithConcurrency(patients, 4, async patient => {
+            try {
+                const snapshot = await fetchPatientSnapshot(patient);
+                const existing = state.patients[patient.encounterNr] || normalizePatientData(patient);
+                state.patients[patient.encounterNr] = normalizePatientData({
+                    ...existing,
+                    age: patient.age || snapshot.age || existing.age || '',
+                    admissionDate: patient.admissionDate || snapshot.admissionDate || existing.admissionDate || '',
+                    incident: patient.incident || snapshot.incident || existing.incident || '',
+                    doctor: patient.doctor || snapshot.doctor || existing.doctor || '',
+                    surgeryDate: snapshot.surgeryDate || existing.surgeryDate || '',
+                    labs: snapshot.labs,
+                    fetchedAt: nowIso(),
+                    lastSeenAt: nowIso()
+                });
+            } catch (error) {
+                console.warn(`Daily overview patient ${patient.encounterNr}:`, error);
+            } finally {
+                completed += 1;
+                if (status) status.textContent = `Ανάγνωση Care ${completed}/${patients.length}...`;
+            }
+        });
+        saveState();
+        render();
+        if (status) status.textContent = `Ενημερώθηκαν ${completed} ασθενείς.`;
     }
 
     function currentPatientData() {
@@ -1161,8 +1331,8 @@
 
     function printableLabs(labs) {
         return LAB_TARGETS
-            .filter(target => labs?.[target.key])
-            .map(target => `<span><b>${target.key}</b> ${escapeHtml(labs[target.key])}</span>`)
+            .filter(target => labs?.[target.key]?.latest?.value)
+            .map(target => `<span><b>${target.key}</b> ${escapeHtml(labComparisonText(labs[target.key]))}</span>`)
             .join(' ');
     }
 
@@ -1256,10 +1426,10 @@
         overlay.id = OVERLAY_ID;
         overlay.innerHTML = `
             <div class="do-header">
-                <div><div class="do-title">Ασκληπιός Helper — Ημερήσια Επισκόπηση</div><div class="do-subtitle">Όλοι οι ασθενείς ταυτόχρονα · στοιχεία ηλικίας, διάγνωσης και θεράποντα απευθείας από το πλάνο</div></div>
+                <div><div class="do-title">Ασκληπιός Helper — Ημερήσια Επισκόπηση</div><div class="do-subtitle">Όλοι οι ασθενείς ταυτόχρονα · ηλικία από το πλάνο και σύγκριση των δύο τελευταίων εργαστηριακών</div></div>
                 <div class="do-header-actions">
                     <span class="do-status"></span>
-                    <button type="button" class="do-primary" id="do-refresh">Ενημέρωση από πλάνο</button>
+                    <button type="button" class="do-primary" id="do-refresh">Ενημέρωση από Care</button>
                     <button type="button" class="do-secondary" id="do-print">Εκτύπωση Α4</button>
                     <button type="button" class="do-secondary" id="do-close">Κλείσιμο</button>
                 </div>
@@ -1300,6 +1470,7 @@
         };
 
         render();
+        setTimeout(() => refreshFromCare(), 120);
     }
 
     A.dailyOverview = {
