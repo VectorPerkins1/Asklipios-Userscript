@@ -1,7 +1,7 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.13.1
+ * Version 0.14.1
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
@@ -733,22 +733,55 @@ function openVialsPanel() {
     doc.getElementById("vials-send").onclick = sendVialsOrders;
 }
 
-function getExamGroups(packageName = selectedPackageName()) {
-    const exams = PACKAGES[packageName] || [];
+function uniqueLabExams(exams) {
+    const seen = new Set();
+
+    return (Array.isArray(exams) ? exams : []).filter(exam => {
+        const key = [
+            exam?.lab ?? "",
+            exam?.dep ?? "",
+            exam?.test ?? "",
+            exam?.hisCode ?? ""
+        ].join("|");
+
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function getExamGroups() {
+    /*
+     * The vial-control columns are independent choices.
+     * They must not be derived only from the package selected before the
+     * verification screen. Otherwise, choosing "ΓΕΝΙΚΗ ΑΙΜΑΤΟΣ" makes the
+     * Biochemistry and Coagulation groups empty.
+     *
+     * This restores the behaviour of the stable Asklipios 1.4.5 build.
+     */
+    const full = PACKAGES["FULL ΠΑΚΕΤΟ"] || [];
+    const fullNoCoag =
+        PACKAGES["FULL ΠΑΚΕΤΟ ΧΩΡΙΣ ΠΗΞΗ"] || full;
+    const generalPackage =
+        PACKAGES["ΓΕΝΙΚΗ ΑΙΜΑΤΟΣ"] || full;
 
     const isGeneral =
-        exam => exam.lab === 5 && exam.dep === 1;
+        exam => Number(exam?.lab) === 5 && Number(exam?.dep) === 1;
 
     const isCoag =
-        exam => exam.lab === 5 && exam.dep === 3;
+        exam => Number(exam?.lab) === 5 && Number(exam?.dep) === 3;
 
     const isBiochem =
-        exam => exam.lab === 1;
+        exam => Number(exam?.lab) === 1;
 
     return {
-        general: exams.filter(isGeneral),
-        biochem: exams.filter(isBiochem),
-        coag: exams.filter(isCoag)
+        general: uniqueLabExams(
+            generalPackage.filter(isGeneral).length
+                ? generalPackage.filter(isGeneral)
+                : full.filter(isGeneral)
+        ),
+        biochem: uniqueLabExams(fullNoCoag.filter(isBiochem)),
+        coag: uniqueLabExams(full.filter(isCoag))
     };
 }
 
@@ -1556,14 +1589,17 @@ async function fetchABOFormFromLabPage(encounterNr, batchNr, room, bed, tries = 
     return null;
 }
 
-function submitABOFormFromParsedForm(parsedForm) {
+function submitABOFormFromParsedForm(parsedForm, targetWindow = null) {
     const doc = getNursingFrame().document;
 
     const form = doc.createElement("form");
     form.method = "post";
 
-    if (parsedForm.aboWindow && !parsedForm.aboWindow.closed) {
-        form.target = parsedForm.aboWindow.name;
+    if (targetWindow && !targetWindow.closed) {
+        if (!targetWindow.name) {
+            targetWindow.name = `asklipios-abo-${Date.now()}`;
+        }
+        form.target = targetWindow.name;
     } else {
         form.target = "_blank";
     }
@@ -1587,7 +1623,7 @@ function submitABOFormFromParsedForm(parsedForm) {
     form.remove();
 }
 
-async function openABOFormForBatch(patient, batchNr, printTab = null, logFn = vialsLog) {
+async function openABOFormForBatch(patient, batchNr, printTab = null, logFn = vialsLog, targetWindow = null) {
     logFn(`🩸 ${patient.label} → αναζήτηση εντύπου Διασταύρωσης...`);
 
     const form = await fetchABOFormFromLabPage(
@@ -1598,6 +1634,9 @@ async function openABOFormForBatch(patient, batchNr, printTab = null, logFn = vi
     );
 
     if (!form) {
+        if (targetWindow && !targetWindow.closed) {
+            targetWindow.close();
+        }
         logFn(`⚠️ ${patient.label} → δεν βρέθηκε ΑΒΟ για batch ${batchNr}`);
         return;
     }
@@ -1607,7 +1646,7 @@ async function openABOFormForBatch(patient, batchNr, printTab = null, logFn = vi
         addPrintLink(printTab, `ΑΒΟ / Διασταύρωση - ${patient.label}`, url);
         logFn(`🖨️ ${patient.label} → προστέθηκε ΑΒΟ στις Εκτυπώσεις`);
     } else {
-        submitABOFormFromParsedForm(form);
+        submitABOFormFromParsedForm(form, targetWindow);
         logFn(`🖨️ ${patient.label} → άνοιξε έντυπο Διασταύρωσης`);
     }
 }
@@ -1620,7 +1659,7 @@ async function sendVialsOrders() {
         return;
     }
 
-    const groups = getExamGroups(selectedPackageName());
+    const groups = getExamGroups();
     const rows = [...doc.querySelectorAll("#lab-vials-panel tr[data-encounter]")];
 
     if (!rows.length) {
@@ -1637,6 +1676,22 @@ async function sendVialsOrders() {
     ).length;
 
     const vialsPrintTab = crossmatchCount > 1 ? createPrintsTab() : null;
+
+    // Open synchronously while still inside the user's click event, so the
+    // browser cannot block the single crossmatch report as a popup later.
+    let singleCrossmatchWindow = null;
+    if (crossmatchCount === 1) {
+        singleCrossmatchWindow = window.open(
+            "about:blank",
+            `asklipios-abo-${Date.now()}`
+        );
+
+        if (singleCrossmatchWindow) {
+            singleCrossmatchWindow.document.title = "ΑΒΟ / Διασταύρωση";
+            singleCrossmatchWindow.document.body.innerHTML =
+                "<p style='font-family:Arial;padding:16px'>Προετοιμασία εντύπου διασταύρωσης…</p>";
+        }
+    }
 
     for (const row of rows) {
         const encounterNr = row.dataset.encounter;
@@ -1668,7 +1723,16 @@ async function sendVialsOrders() {
             exams = exams.concat(groups.coag);
         }
 
+        exams = uniqueLabExams(exams);
+
         if (!exams.length) {
+            if (
+                row.querySelector(".vial-crossmatch")?.checked &&
+                singleCrossmatchWindow &&
+                !singleCrossmatchWindow.closed
+            ) {
+                singleCrossmatchWindow.close();
+            }
             vialsLog(`⚠️ ${label} → καμία εργαστηριακή εντολή`);
             continue;
         }
@@ -1691,13 +1755,28 @@ async function sendVialsOrders() {
                     },
                     r.batch_nr,
                     vialsPrintTab,
-                    vialsLog
+                    vialsLog,
+                    crossmatchCount === 1 ? singleCrossmatchWindow : null
                 );
             }
         } else {
+            if (
+                row.querySelector(".vial-crossmatch")?.checked &&
+                singleCrossmatchWindow &&
+                !singleCrossmatchWindow.closed
+            ) {
+                singleCrossmatchWindow.close();
+            }
             vialsLog(`❌ ${label}`);
     }
         } catch (e) {
+            if (
+                row.querySelector(".vial-crossmatch")?.checked &&
+                singleCrossmatchWindow &&
+                !singleCrossmatchWindow.closed
+            ) {
+                singleCrossmatchWindow.close();
+            }
             vialsLog(`❌ ${label} → ${e.message}`);
         }
 
