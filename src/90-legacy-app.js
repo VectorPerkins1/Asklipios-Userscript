@@ -1,7 +1,7 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.15.2
+ * Version 0.15.3
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
@@ -28,6 +28,75 @@
             'Asklipios shared data is missing. Load data modules before 90-legacy-app.js.'
         );
     }
+
+
+
+    // 0.15.3 migration:
+    // Factory presets changed in 0.15.x, but an older locally-saved preset with
+    // the same name can override the new GitHub data through 35-data-registry.js.
+    // Reset only these factory presets once so the new diagnoses / medical acts /
+    // text are actually visible. User-created presets with other names are untouched.
+    (function restoreUpdatedFactoryPresetsOnce() {
+        const MIGRATION_KEY = 'asklipios.migration.factory-presets.0.15.3';
+        const presetNames = [
+            'Κάταγμα επιγονατίδας',
+            'Ρήξη μηνίσκου',
+            'Κατάγματα σφυρών'
+        ];
+        const sections = [
+            'DIAGNOSIS_OPTIONS',
+            'MEDICAL_CARD_PRESETS',
+            'MEDICAL_ACT_OPTIONS',
+            'PRESET_DISCHARGE_TEXTS',
+            'SURGERY_DESCRIPTIONS'
+        ];
+
+        try {
+            const alreadyDone =
+                typeof GM_getValue === 'function'
+                    ? GM_getValue(MIGRATION_KEY, false)
+                    : window.localStorage.getItem(MIGRATION_KEY) === '1';
+
+            if (alreadyDone || !A.registry?.restoreMapItem) return;
+
+            const state = A.registry.getState?.();
+            const patches = state?.mapPatches || {};
+            let restored = 0;
+
+            sections.forEach(section => {
+                const patch = patches[section];
+                if (!patch) return;
+
+                presetNames.forEach(name => {
+                    const hasUpsert = Object.prototype.hasOwnProperty.call(
+                        patch.upserts || {},
+                        name
+                    );
+                    const isDeleted = Array.isArray(patch.deleted) &&
+                        patch.deleted.includes(name);
+
+                    if (!hasUpsert && !isDeleted) return;
+
+                    A.registry.restoreMapItem(section, name);
+                    restored += 1;
+                });
+            });
+
+            if (typeof GM_setValue === 'function') {
+                GM_setValue(MIGRATION_KEY, true);
+            } else {
+                window.localStorage.setItem(MIGRATION_KEY, '1');
+            }
+
+            if (restored) {
+                console.log(
+                    `Asklipios 0.15.3: restored ${restored} stale factory preset override(s).`
+                );
+            }
+        } catch (error) {
+            console.warn('Asklipios 0.15.3 preset migration failed:', error);
+        }
+    })();
 
     const requiredDataKeys = [
         'PACKAGES',
