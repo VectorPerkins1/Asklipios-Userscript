@@ -1237,7 +1237,7 @@
 
     A.modules.medicalCardData = {
         loaded: true,
-        version: '0.15.0'
+        version: '0.15.3'
     };
 
     console.log('Asklipios medical card data loaded', {
