@@ -1,7 +1,7 @@
 /*
  * Asklipios — Legacy Application
  *
- * Version 0.15.0
+ * Version 0.15.1
  * Laboratory and Medical Card static data are loaded from:
  * - 10-lab-data.js
  * - 20-medical-card-data.js
@@ -78,7 +78,7 @@
     A.modules = A.modules || {};
     A.modules.legacyApp = {
         loaded: true,
-        version: '0.15.0'
+        version: '0.13.1'
     };
 
 
@@ -2127,21 +2127,16 @@ async function sendVialsOrders() {
         }];
     }
 
-    function simplifyMedicalActsForPreset(medicalActs) {
-        return (Array.isArray(medicalActs) ? medicalActs : [])
-            .filter(Boolean)
-            .map(medicalAct => ({
-                id: Number(medicalAct.id || 0),
-                code: String(medicalAct.code || medicalAct.displayCode || ''),
-                name: String(medicalAct.name || ''),
-                requireLr: medicalAct.requireLr?.value === true || medicalAct.requireLr === true,
-                dependency: medicalAct.dependency ?? null,
-                default: true
-            }));
-    }
-
     function simplifyMedicalActForPreset(medicalAct) {
-        return simplifyMedicalActsForPreset(medicalAct ? [medicalAct] : []);
+        if (!medicalAct) return [];
+        return [{
+            id: Number(medicalAct.id || 0),
+            code: String(medicalAct.code || medicalAct.displayCode || ''),
+            name: String(medicalAct.name || ''),
+            requireLr: medicalAct.requireLr?.value === true || medicalAct.requireLr === true,
+            dependency: medicalAct.dependency ?? null,
+            default: true
+        }];
     }
 
     function extractPresetOnlyDischargeText() {
@@ -2188,7 +2183,7 @@ async function sendVialsOrders() {
         }
 
         const diagnosis = getSelectedDiagnosisObject();
-        const medicalActs = getSelectedMedicalActObjects();
+        const medicalAct = getSelectedMedicalActObject();
         const surgeryDescription =
             doc.getElementById('mc-surgery-description')?.value || '';
 
@@ -2204,7 +2199,7 @@ async function sendVialsOrders() {
         A.registry.setMapItem(
             'MEDICAL_ACT_OPTIONS',
             name,
-            simplifyMedicalActsForPreset(medicalActs)
+            simplifyMedicalActForPreset(medicalAct)
         );
         A.registry.setMapItem(
             'PRESET_DISCHARGE_TEXTS',
@@ -2233,7 +2228,7 @@ async function sendVialsOrders() {
         patients,
         dateText,
         selectedDiagnosis,
-        selectedMedicalActs,
+        selectedMedicalAct,
         finalCourse,
         finalTherapy,
         finalDischargeInstructions,
@@ -2251,12 +2246,10 @@ async function sendVialsOrders() {
                 title: 'Διάγνωση ICD-10',
                 text: `${selectedDiagnosis.code || ''} — ${selectedDiagnosis.name || ''}`
             } : null,
-            selectedMedicalActs?.length ? {
+            selectedMedicalAct ? {
                 key: 'medicalAct',
-                title: `Ιατρικές πράξεις (${selectedMedicalActs.length})`,
-                text: selectedMedicalActs
-                    .map(act => `${act.code || ''} — ${act.name || ''}`)
-                    .join('\n')
+                title: 'Ιατρική πράξη',
+                text: `${selectedMedicalAct.code || ''} — ${selectedMedicalAct.name || ''}`
             } : null,
             finalCourse ? { key: 'course', title: 'Πορεία νόσου', text: finalCourse } : null,
             finalTherapy ? { key: 'therapy', title: 'Θεραπευτική αγωγή', text: finalTherapy } : null,
@@ -2497,11 +2490,10 @@ async function sendVialsOrders() {
             </div>
 
             <div style="margin-top:10px;">
-                <label><b>Ιατρικές Πράξεις</b></label>
-                <div id="mc-medact-select" style="width:100%;margin-top:4px;box-sizing:border-box;border:1px solid #aaa;border-radius:3px;max-height:180px;overflow:auto;background:#fff;padding:4px;">
-                    <div style="padding:6px;color:#666;">-- Επιλογή ιατρικής πράξης --</div>
-                </div>
-                <div style="font-size:11px;color:#666;margin-top:3px;">Μπορείς να επιλέξεις περισσότερες από μία πράξεις.</div>
+                <label><b>Ιατρική Πράξη</b></label>
+                <select id="mc-medact-select" style="width:100%;margin-top:4px;">
+                    <option value="">-- Επιλογή ιατρικής πράξης --</option>
+                </select>
             </div>
 
             <div style="margin-top:10px;">
@@ -2882,7 +2874,7 @@ async function sendVialsOrders() {
             const dateText = getMedicalCardSelectedDate();
             const selectedDiagnosis = getSelectedDiagnosisObject();
             const selectedDoctorId = getSelectedMedicalCardDoctorId();
-            const selectedMedicalActs = getSelectedMedicalActObjects();
+            const selectedMedicalAct = getSelectedMedicalActObject();
 
             let suffix = "";
             if (left) suffix += " - Αριστερά";
@@ -2909,7 +2901,7 @@ async function sendVialsOrders() {
             const surgeryDescription =
                 doc.getElementById('mc-surgery-description')?.value || '';
 
-            if (!course && !therapy && !selectedDiagnosis && !selectedMedicalActs.length &&
+            if (!course && !therapy && !selectedDiagnosis && !selectedMedicalAct &&
                 !dischargeInstructions && !surgeryEnabled) {
                 alert("Δεν έχεις συμπληρώσει κάποιο στοιχείο για καταχώρηση.");
                 return;
@@ -2919,7 +2911,7 @@ async function sendVialsOrders() {
                 patients,
                 dateText,
                 selectedDiagnosis,
-                selectedMedicalActs,
+                selectedMedicalAct,
                 finalCourse,
                 finalTherapy,
                 finalDischargeInstructions,
@@ -2941,7 +2933,7 @@ async function sendVialsOrders() {
 
             if (
                 actions.has('medicalAct') &&
-                selectedMedicalActs.some(act => act?.requireLr?.value) &&
+                selectedMedicalAct?.requireLr?.value &&
                 !getMedicalActLocation()
             ) {
                 alert("Η ιατρική πράξη απαιτεί πλευρά: Αριστερά ή Δεξιά.");
@@ -2971,7 +2963,7 @@ async function sendVialsOrders() {
                         : { pnurId: '', ipdiId: '' };
 
                     let diagnosisIdForSurgery = "";
-                    const medicalActLinkIdsForSurgery = [];
+                    let medicalActLinkIdForSurgery = "";
 
                     if (actions.has('diagnosis') && selectedDiagnosis) {
                         const diagnosisSaveResult = await saveDiagnosis(
@@ -2983,22 +2975,17 @@ async function sendVialsOrders() {
                         medicalCardLog(`✅ Διάγνωση: ${selectedDiagnosis.code}`);
                     }
 
-                    if (actions.has('medicalAct') && selectedMedicalActs.length) {
-                        for (const selectedMedicalAct of selectedMedicalActs) {
-                            const medicalActSaveResult = await saveMedicalAct(
-                                p.encounterNr,
-                                patientIds.pnurId,
-                                patientIds.ipdiId,
-                                selectedMedicalAct,
-                                selectedDoctorId
-                            );
-                            if (medicalActSaveResult.medicalActLinkId) {
-                                medicalActLinkIdsForSurgery.push(
-                                    String(medicalActSaveResult.medicalActLinkId)
-                                );
-                            }
-                            medicalCardLog(`✅ Ιατρική πράξη: ${selectedMedicalAct.code}`);
-                        }
+                    if (actions.has('medicalAct') && selectedMedicalAct) {
+                        const medicalActSaveResult = await saveMedicalAct(
+                            p.encounterNr,
+                            patientIds.pnurId,
+                            patientIds.ipdiId,
+                            selectedMedicalAct,
+                            selectedDoctorId
+                        );
+                        medicalActLinkIdForSurgery =
+                            medicalActSaveResult.medicalActLinkId;
+                        medicalCardLog(`✅ Ιατρική πράξη: ${selectedMedicalAct.code}`);
                     }
 
                     if (actions.has('course') && finalCourse) {
@@ -3025,7 +3012,7 @@ async function sendVialsOrders() {
                             encounterNr: p.encounterNr,
                             pnurId: patientIds.pnurId,
                             diagnosisId: diagnosisIdForSurgery,
-                            medicalActLinkIds: medicalActLinkIdsForSurgery
+                            medicalActLinkId: medicalActLinkIdForSurgery
                         });
                         medicalCardLog(`✅ ${p.room}/${p.bed}: Πρακτικό χειρουργείου`);
                     }
@@ -3153,9 +3140,11 @@ async function sendVialsOrders() {
         * Επέμβαση = επιλεγμένη ιατρική πράξη
         */
         if (medicalActLabel) {
-            medicalActLabel.value = getSelectedMedicalActObjects()
-                .map(act => `${act.code || ''} - ${act.name || ''}`)
-                .join('\n');
+            const medicalActOption =
+                medicalActSelect?.selectedOptions?.[0];
+
+            medicalActLabel.value =
+                medicalActOption?.textContent?.trim() || "";
         }
 
         /*
@@ -3591,65 +3580,37 @@ function normalizeMedicalActObject(a) {
 
 function fillMedicalActDropdownForPreset(presetName) {
     const doc = getNursingFrame().document;
-    const container = doc.getElementById("mc-medact-select");
-    if (!container) return;
+    const sel = doc.getElementById("mc-medact-select");
+    if (!sel) return;
+
+    sel.innerHTML = '<option value="">-- Επιλογή ιατρικής πράξης --</option>';
 
     const list = MEDICAL_ACT_OPTIONS[presetName] || [];
-    container.innerHTML = "";
 
-    if (!list.length) {
-        container.innerHTML = '<div style="padding:6px;color:#666;">Δεν υπάρχουν ιατρικές πράξεις για το συγκεκριμένο πρότυπο.</div>';
-        return;
-    }
-
-    list.forEach((a, index) => {
+    list.forEach(a => {
         const fullAct = normalizeMedicalActObject(a);
-        const row = doc.createElement("label");
-        row.style.cssText = [
-            "display:flex",
-            "gap:7px",
-            "align-items:flex-start",
-            "padding:6px",
-            index ? "border-top:1px solid #eee" : "",
-            "cursor:pointer",
-            "line-height:1.25"
-        ].filter(Boolean).join(";");
 
-        const checkbox = doc.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.className = "mc-medact-checkbox";
-        checkbox.value = String(a.id);
-        checkbox.dataset.medact = JSON.stringify(fullAct);
-        checkbox.checked = !!a.default;
-        checkbox.style.marginTop = "2px";
+        const opt = doc.createElement("option");
+        opt.value = a.id;
+        opt.textContent = `${a.code} - ${a.name}`;
+        opt.dataset.medact = JSON.stringify(fullAct);
 
-        const text = doc.createElement("span");
-        text.textContent = `${a.code} - ${a.name}`;
+        if (a.default) opt.selected = true;
 
-        row.appendChild(checkbox);
-        row.appendChild(text);
-        container.appendChild(row);
+        sel.appendChild(opt);
     });
 }
 
-function getSelectedMedicalActObjects() {
-    const doc = getNursingFrame().document;
-    return [...doc.querySelectorAll("#mc-medact-select .mc-medact-checkbox:checked")]
-        .map(input => {
-            try {
-                return input.dataset.medact
-                    ? JSON.parse(input.dataset.medact)
-                    : null;
-            } catch (error) {
-                console.error("Invalid medical-act dataset", error);
-                return null;
-            }
-        })
-        .filter(Boolean);
-}
-
 function getSelectedMedicalActObject() {
-    return getSelectedMedicalActObjects()[0] || null;
+    const doc = getNursingFrame().document;
+    const sel = doc.getElementById("mc-medact-select");
+
+    if (!sel || !sel.value) return null;
+
+    const opt = sel.selectedOptions[0];
+    if (!opt.dataset.medact) return null;
+
+    return JSON.parse(opt.dataset.medact);
 }
 
 async function saveDischargeInstructions(encounterNr, text, dateText) {
@@ -3871,8 +3832,7 @@ async function saveSurgeryReport({
     encounterNr,
     pnurId,
     diagnosisId,
-    medicalActLinkIds = [],
-    medicalActLinkId = ""
+    medicalActLinkId
 }) {
     const doc = getNursingFrame().document;
 
@@ -3907,15 +3867,7 @@ async function saveSurgeryReport({
         throw new Error("Δεν υπάρχει ID διάγνωσης για το πρακτικό.");
     }
 
-    const normalizedMedicalActLinkIds = [
-        ...(Array.isArray(medicalActLinkIds) ? medicalActLinkIds : []),
-        medicalActLinkId
-    ]
-        .map(value => String(value || '').trim())
-        .filter(Boolean)
-        .filter((value, index, array) => array.indexOf(value) === index);
-
-    if (!normalizedMedicalActLinkIds.length) {
+    if (!medicalActLinkId) {
         throw new Error("Δεν υπάρχει ID ιατρικής πράξης για το πρακτικό.");
     }
 
@@ -3965,13 +3917,19 @@ async function saveSurgeryReport({
         opDocDuration: opDocDuration,
         opDocNosima: String(diagnosisId),
 
-        epemvaseisList: normalizedMedicalActLinkIds.map(linkId => ({
-            opSyndesiEpemvasisId: String(linkId),
-            opEpemvasiDescr: opEpemvasiDescr,
-            opEpemvasiType: "1",
-            opDocId: "new",
-            doctorsList: doctorsList
-        })),
+        epemvaseisList: [
+            {
+                opSyndesiEpemvasisId:
+                    String(medicalActLinkId),
+
+                opEpemvasiDescr:
+                    opEpemvasiDescr,
+
+                opEpemvasiType: "1",
+                opDocId: "new",
+                doctorsList: doctorsList
+            }
+        ],
 
         opDocAnaestesia:
             String(opDocAnaestesia),
