@@ -1,22 +1,22 @@
 // ==UserScript==
 // @name         Asklipios Modular
 // @namespace    https://github.com/VectorPerkins1/Asklipios-Userscript
-// @version      0.15.7
+// @version      0.15.8
 // @description  Modular tools for the Asklipios hospital system
 // @match        *://care.ghl.medical:51021/*
 // @match        *://10.136.33.126:51021/*
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/00-namespace.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/10-lab-data.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/12-lab-catalog.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/15-local-data-store.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/20-medical-card-data.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/30-xray-data.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/35-data-registry.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/22-clinical-catalog.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/90-legacy-app.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/55-daily-overview.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/45-settings-ui.js?v=0.15.7
-// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/46-clinical-settings-ui.js?v=0.15.7
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/00-namespace.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/10-lab-data.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/12-lab-catalog.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/15-local-data-store.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/20-medical-card-data.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/30-xray-data.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/35-data-registry.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/22-clinical-catalog.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/90-legacy-app.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/55-daily-overview.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/45-settings-ui.js?v=0.15.8
+// @require      https://raw.githubusercontent.com/VectorPerkins1/Asklipios-Userscript/main/src/46-clinical-settings-ui.js?v=0.15.8
 // @run-at       document-idle
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -27,18 +27,18 @@
 (function () {
     'use strict';
 
-    console.log('Asklipios Modular loader 0.15.7 loaded');
+    console.log('Asklipios Modular loader 0.15.8 loaded');
     console.log('Loaded modules:', window.Asklipios?.modules);
 })();
 
 
-/* Embedded 0.15.7 admission/laboratory patch.
+/* Embedded 0.15.8 admission/laboratory patch.
  * Kept in the loader deliberately so Tampermonkey does not depend on a new
  * remote @require file being present before the loader is updated.
  */
 /*
  * Asklipios — Laboratory / Admission package fixes
- * Version 0.15.7
+ * Version 0.15.8
  *
  * 1) Vial control follows the currently selected laboratory package.
  *    If the package can be represented exactly by the existing vial columns,
@@ -58,7 +58,7 @@
 
     const A = window.Asklipios;
     if (!A?.data?.PACKAGES || !A?.data?.EXTRA_EXAMS || !A?.data?.XRAY_EXAMS) {
-        console.warn('Asklipios 0.15.7 lab/admission fixes: required data are missing.');
+        console.warn('Asklipios 0.15.8 lab/admission fixes: required data are missing.');
         return;
     }
 
@@ -622,26 +622,67 @@
         form.remove();
     }
 
+    function buildPostBridgeUrl(printHub, spec) {
+        if (!printHub || printHub.closed || !spec?.action) return '';
+
+        const fields = (spec.fields || []).map(([name, value]) =>
+            `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`
+        ).join('');
+
+        const html = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Άνοιγμα εκτύπωσης…</title></head>
+<body style="font-family:Arial,sans-serif;padding:18px">
+<form id="asklipios-print-bridge" method="${escapeHtml(spec.method || 'POST')}" action="${escapeHtml(spec.action)}">
+${fields}
+</form>
+<div>Άνοιγμα εγγράφου…</div>
+<script>
+window.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('asklipios-print-bridge').submit();
+});
+<\/script>
+<noscript><button type="submit" form="asklipios-print-bridge">Άνοιγμα εγγράφου</button></noscript>
+</body></html>`;
+
+        const blob = new printHub.Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = printHub.URL.createObjectURL(blob);
+        printHub.__asklipiosBridgeUrls = printHub.__asklipiosBridgeUrls || [];
+        printHub.__asklipiosBridgeUrls.push(url);
+        return url;
+    }
+
     function addPrintSpec(printHub, encounterNr, patientLabel, title, spec) {
         const section = ensurePatientSection(printHub, encounterNr, patientLabel);
         if (!section || !spec) return;
 
+        const a = printHub.document.createElement('a');
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.textContent = title;
+
         if (spec.kind === 'url') {
-            const a = printHub.document.createElement('a');
             a.href = spec.url;
-            a.target = '_blank';
-            a.rel = 'noopener';
-            a.textContent = title;
             section.appendChild(a);
             return;
         }
 
-        const button = printHub.document.createElement('button');
-        button.type = 'button';
-        button.className = 'print-btn';
-        button.textContent = title;
-        button.onclick = () => submitPrintForm(spec, printHub.document);
-        section.appendChild(button);
+        // Form-backed Care documents (lab referrals, ABO, some medical instructions)
+        // require POST. A button works only with normal left-click and cannot be
+        // middle-clicked into a background tab. The href below points to a tiny
+        // Blob bridge page which auto-submits the original POST form. Therefore
+        // middle-click / Ctrl+click / "Open link in new tab" work exactly like a
+        // normal link, while an ordinary left-click preserves the direct form submit.
+        const bridgeUrl = buildPostBridgeUrl(printHub, spec);
+        a.href = bridgeUrl || '#';
+        a.className = 'print-btn';
+        a.addEventListener('click', event => {
+            const modified = event.ctrlKey || event.metaKey || event.shiftKey || event.altKey;
+            if (event.button === 0 && !modified) {
+                event.preventDefault();
+                submitPrintForm(spec, printHub.document);
+            }
+        });
+        section.appendChild(a);
     }
 
     function addHubWarning(printHub, encounterNr, patientLabel, text) {
@@ -1067,7 +1108,7 @@
                     labDoc = artifacts.document;
 
                     const referrals = artifacts.referrals;
-                    console.debug('[Asklipios 0.15.7] lab referrals', {
+                    console.debug('[Asklipios 0.15.8] lab referrals', {
                         encounterNr,
                         batchNr,
                         count: referrals.length,
@@ -1154,14 +1195,14 @@
         if (!doc) return;
 
         const vials = doc.getElementById('lab-vials-check');
-        if (vials && vials.dataset.asklipios0157 !== '1') {
-            vials.dataset.asklipios0157 = '1';
+        if (vials && vials.dataset.asklipios0158 !== '1') {
+            vials.dataset.asklipios0158 = '1';
             vials.onclick = openVialsPanelDynamic;
         }
 
         const admission = doc.getElementById('lab-admission-package');
-        if (admission && admission.dataset.asklipios0157 !== '1') {
-            admission.dataset.asklipios0157 = '1';
+        if (admission && admission.dataset.asklipios0158 !== '1') {
+            admission.dataset.asklipios0158 = '1';
             admission.onclick = openAdmissionPanelFixed;
         }
     }
@@ -1172,10 +1213,10 @@
     A.modules = A.modules || {};
     A.modules.labAdmissionFixes = {
         loaded: true,
-        version: '0.15.7',
+        version: '0.15.8',
         stop() { clearInterval(timer); }
     };
 
-    console.log('Asklipios 0.15.7 laboratory/admission fixes loaded');
+    console.log('Asklipios 0.15.8 laboratory/admission fixes loaded');
 })();
 
