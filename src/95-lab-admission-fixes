@@ -1,6 +1,6 @@
 /*
  * Asklipios — Laboratory / Admission package fixes
- * Version 0.15.5
+ * Version 0.15.7
  *
  * 1) Vial control follows the currently selected laboratory package.
  *    If the package can be represented exactly by the existing vial columns,
@@ -20,7 +20,7 @@
 
     const A = window.Asklipios;
     if (!A?.data?.PACKAGES || !A?.data?.EXTRA_EXAMS || !A?.data?.XRAY_EXAMS) {
-        console.warn('Asklipios 0.15.5 lab/admission fixes: required data are missing.');
+        console.warn('Asklipios 0.15.7 lab/admission fixes: required data are missing.');
         return;
     }
 
@@ -386,20 +386,73 @@
         return window.location.origin + '/modules/nursing/nursing-station-patient-laboratory.php?' + params.toString();
     }
 
-    async function fetchLabDocument(encounterNr, room, bed, predicate = null, tries = 7) {
-        const url = buildPatientLabUrl(encounterNr, room, bed);
+    async function fetchLabDocument(encounterNr, room, bed, predicate = null, tries = 12) {
+        const baseUrl = buildPatientLabUrl(encounterNr, room, bed);
         let latest = null;
 
         for (let i = 0; i < tries; i++) {
-            const res = await fetch(url, { credentials: 'include' });
+            const url = new URL(baseUrl);
+            // Force a fresh server response on every poll. The referral forms are
+            // generated asynchronously after /laboratory-exams/order returns.
+            url.searchParams.set('_asklipios_ts', String(Date.now()));
+
+            const res = await fetch(url.href, {
+                credentials: 'include',
+                cache: 'no-store',
+                headers: {
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
+            });
+
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status} κατά την ανάκτηση της σελίδας εργαστηριακών`);
+            }
+
             const html = await res.text();
             latest = new DOMParser().parseFromString(html, 'text/html');
 
             if (!predicate || predicate(latest)) return latest;
-            await new Promise(resolve => setTimeout(resolve, 900));
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
 
         return latest;
+    }
+
+    async function fetchLabArtifactsForBatch(patient, batchNr, options = {}) {
+        const requireABO = !!options.requireABO;
+        const tries = Number(options.tries || 15);
+        let lastDoc = null;
+        let referrals = [];
+        let abo = null;
+
+        lastDoc = await fetchLabDocument(
+            patient.encounterNr,
+            patient.room,
+            patient.bed,
+            doc => {
+                referrals = extractLabReferralSpecs(doc, batchNr);
+                abo = extractABOSpec(doc, batchNr);
+
+                // This mirrors the ABO logic: first send the order, then repeatedly
+                // fetch the patient's laboratory page until the forms generated for
+                // the new batch become visible. A batch may yield 1, 2, 3+ referral
+                // forms (different lisorid values), so we keep every distinct form.
+                return referrals.length > 0 && (!requireABO || !!abo);
+            },
+            tries
+        );
+
+        // Re-extract from the final document so the returned data always correspond
+        // to the last server response, including the timeout case.
+        referrals = extractLabReferralSpecs(lastDoc, batchNr);
+        abo = extractABOSpec(lastDoc, batchNr);
+
+        return {
+            document: lastDoc,
+            referrals,
+            abo
+        };
     }
 
     function formMatchesBatch(form, batchNr) {
@@ -437,7 +490,7 @@
 
         [...doc.querySelectorAll('form')].forEach(form => {
             const action = (form.getAttribute('action') || '').toLowerCase();
-            if (!action.includes('laboratory_report.php')) return;
+            if (!action.includes('laboratory_report.php') && !action.includes('laboratory_report2.php')) return;
             if (!formMatchesBatch(form, batchNr)) return;
 
             const spec = serializeForm(form);
@@ -510,12 +563,13 @@
         return section;
     }
 
-    function submitPrintForm(spec) {
-        const doc = nursingDocument() || document;
+    function submitPrintForm(spec, targetDoc = null) {
+        const doc = targetDoc || nursingDocument() || document;
         const form = doc.createElement('form');
         form.method = spec.method || 'POST';
         form.action = spec.action;
         form.target = '_blank';
+        form.style.display = 'none';
 
         (spec.fields || []).forEach(([name, value]) => {
             const input = doc.createElement('input');
@@ -548,7 +602,7 @@
         button.type = 'button';
         button.className = 'print-btn';
         button.textContent = title;
-        button.onclick = () => submitPrintForm(spec);
+        button.onclick = () => submitPrintForm(spec, printHub.document);
         section.appendChild(button);
     }
 
@@ -964,14 +1018,27 @@
                     batchNr = result.batch_nr;
                     admissionLog(`✅ ${label} → εργαστηριακό batch ${batchNr}`);
 
-                    labDoc = await fetchLabDocument(
-                        encounterNr,
-                        patient.room,
-                        patient.bed,
-                        d => extractLabReferralSpecs(d, batchNr).length > 0 || !!extractABOSpec(d, batchNr)
-                    );
+                    // The Care server creates the printable forms only AFTER the
+                    // laboratory order has been accepted. Fetch/poll the patient's
+                    // laboratory page exactly like the existing ABO workflow and
+                    // collect every laboratory_report form belonging to this batch.
+                    const artifacts = await fetchLabArtifactsForBatch(patient, batchNr, {
+                        requireABO: pentada,
+                        tries: 15
+                    });
+                    labDoc = artifacts.document;
 
-                    const referrals = extractLabReferralSpecs(labDoc, batchNr);
+                    const referrals = artifacts.referrals;
+                    console.debug('[Asklipios 0.15.7] lab referrals', {
+                        encounterNr,
+                        batchNr,
+                        count: referrals.length,
+                        forms: referrals.map(spec => ({
+                            action: spec.action,
+                            method: spec.method,
+                            lisorid: (spec.fields || []).find(([name]) => name === 'lisorid')?.[1] || ''
+                        }))
+                    });
                     if (referrals.length) {
                         referrals.forEach((spec, index) => {
                             const suffix = spec.titleSuffix ? ` — ${spec.titleSuffix}` : '';
@@ -990,7 +1057,7 @@
                     }
 
                     if (pentada) {
-                        const abo = extractABOSpec(labDoc, batchNr);
+                        const abo = artifacts.abo;
                         if (abo) {
                             addPrintSpec(printHub, encounterNr, label, 'ΑΒΟ / Διασταύρωση', abo);
                             admissionLog(`🖨️ ${label} → προστέθηκε Διασταύρωση`);
@@ -1049,14 +1116,14 @@
         if (!doc) return;
 
         const vials = doc.getElementById('lab-vials-check');
-        if (vials && vials.dataset.asklipios0155 !== '1') {
-            vials.dataset.asklipios0155 = '1';
+        if (vials && vials.dataset.asklipios0157 !== '1') {
+            vials.dataset.asklipios0157 = '1';
             vials.onclick = openVialsPanelDynamic;
         }
 
         const admission = doc.getElementById('lab-admission-package');
-        if (admission && admission.dataset.asklipios0155 !== '1') {
-            admission.dataset.asklipios0155 = '1';
+        if (admission && admission.dataset.asklipios0157 !== '1') {
+            admission.dataset.asklipios0157 = '1';
             admission.onclick = openAdmissionPanelFixed;
         }
     }
@@ -1067,9 +1134,9 @@
     A.modules = A.modules || {};
     A.modules.labAdmissionFixes = {
         loaded: true,
-        version: '0.15.5',
+        version: '0.15.7',
         stop() { clearInterval(timer); }
     };
 
-    console.log('Asklipios 0.15.5 laboratory/admission fixes loaded');
+    console.log('Asklipios 0.15.7 laboratory/admission fixes loaded');
 })();
